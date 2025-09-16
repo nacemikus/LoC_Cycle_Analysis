@@ -1,0 +1,2125 @@
+---
+title: "Control task 2.0"
+output:
+  html_document:
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Losing of control task (version 2.0.)
+
+The task is based on Fede's paper (Mancinelli et al. (2022), adapted by Fede and Nace).
+
+See ECNP poster for task details.
+
+The task has 30 trials played in 4 sessions separated by 1 week by ~55 participants (~45 showed up for all sessions), each trial has many "moves" or button pressess. A model was fitted to move data, the details of which are to be discussed and can be ignored for now.
+
+# Notes on group-level variables 
+Locus of control subscales are Internality, Chance and Powerful Others
+pdi = Peters delusional ideation                       
+psc = perceived stress
+cti = trauma inventry
+Attachment_Anxiety and  Attachment_Avoidance are attachment styles
+
+# Notes on trial-level variables 
+
+Each of the two goals (Goal 1 and Goal 2) have points to gain if goal reached ("gain1" & "gain2") and points to lose if goal not reached ("loss1" & "loss2"). Here, we have two types of trials, those where there is something to gain, but nothing to lose (gain > 0, loss =0), and trials where there is something to lose but nothing to gain (gain = 0 , loss >0). 
+
+When a variable is scaled across participants it get a tag "_s", when a varialbe is scaled both across and within participants it gets a tab "_sc"
+
+control = probability (experimental) that the ball does not shake (part of the experiment)
+prop_followed_command = the proportion of moves in that trial where the ball did not shake. 
+prop_good_moves = the proportion of moves in that trial where the ball followed the command (regardless of whether it shook or not).
+prop_good_move_by_chance = the proportion of moves in that trial where the ball shook but went in the wanted direction
+
+# Load data 
+trial-wise granularity, and move-wise granularity
+```{r}
+# load packages 
+library(rmatio)
+# library(ggplot2)
+library(tidyverse)
+library(nlme) # for mixed models
+library(psych) # for ICCs 
+library(cowplot) # for plotting grids
+library(lme4)
+library(xtable)
+library(lmerTest)
+library(ggcorrplot)
+source("theme_functions.r")
+source("auxiliary_functions.r")
+#trial-wise granularity
+trialdata <- readRDS("per_trial_data_baseline_4r.rds")
+movedata <- readRDS(file = "per_move_data.rds")
+
+# cleaning RTs 
+movedata = movedata %>% filter( !is.na(outcome))  %>% rename(trial_number = trial)
+
+movedata <- movedata %>% mutate(relevant_move =outcome %in% c("smooth","oops"),
+                                  move_types = case_when(
+                                  relevant_move & RT<=200  ~ "fast_abnormal_move",
+                                  relevant_move & RT>200 & RT <= 650 ~ "normal_move",
+                                  relevant_move & RT>650 & RT<= 3000 ~ "long_normal_move",
+                                  relevant_move & RT>3000 ~ "long_abnormal_move",
+                                  outcome == "error" ~ "error",
+                                  outcome== "while_blue"~ "while_blue",
+                                  outcome== "while_red"~ "while_red",
+                                  TRUE ~ NA_character_ ),
+                                legit_move = ((outcome %in% c("smooth","oops")) & RT>200 & RT <= 3000) |
+                                                (outcome %in% c("error","while_blue","while_red"))
+)
+ 
+
+movedata$RT_relevant = movedata$RT
+movedata$RT_relevant[movedata$relevant_move == F] = NA
+movedata$RT_relevant[movedata$RT_relevant<200] = NA
+movedata$RT_relevant[movedata$RT_relevant>3000] = NA
+
+# merge data:
+move_data_2_trial_data = movedata %>% group_by(prolific_id, trial_number) %>% 
+  summarize(no_non_nan_moves = sum (!is.na(outcome)),
+            long_moves = sum(RT>3000),
+            mean_logRT= mean(RT_relevant %>% log, na.rm =T),
+            move_no = sum(outcome == "oops")+sum(outcome == "smooth"),
+            prop_good_moves = sum(outcome_type == "good_move")/move_no,
+            prop_shook = sum(outcome == "oops")/move_no,
+            no_lucky_good_moves = sum(outcome == "oops" & outcome_type == "good_move"),
+            sum_pressed_while_blue = sum(outcome == "while_blue"),
+            sum_pressed_while_red = sum(outcome == "while_red"),
+            sum_pressed_too_soon = sum(outcome == "error"),
+            prop_relevant_moves = sum(legit_move)/no_non_nan_moves
+  ) %>% ungroup()
+
+trialdata = trialdata %>% merge(move_data_2_trial_data, by = c("prolific_id", "trial_number"))
+
+trialdata =per_trial_data_all
+
+# some more data prep:
+# trialdata$prop_shook = 
+trialdata  = trialdata %>% filter(trial_number > 0)
+trialdata <- trialdata %>% mutate(goal_achieved = outcome > 0,
+                                  prop_shook = num_randdir /(num_randdir + num_perfect),
+                                  prop_followed_command = 1-prop_shook,
+                                  blue_errors = num_whileblue/num_blue,
+                                  prop_followed_command_s = prop_followed_command %>% ave(FUN = scale),
+                                  prop_followed_command_sc = prop_followed_command %>% ave(group =trialdata$prolific_id, FUN = scale),
+                                  blue_errors_s = blue_errors %>% ave(FUN = scale))
+
+trialdata <- trialdata %>% mutate(phq_total = phq_total - 8,
+                                  gad_total = gad_total- 7)
+
+# remove attention check ppl
+
+
+
+movedata_ins = movedata %>% merge(trialdata %>% select(prolific_id, trial_number, shaps_total:ius_total), by = c("prolific_id", "trial_number"))
+                                 
+      
+movedata_ins = movedata_ins %>% group_by(prolific_id, move_types) %>%  
+  summarize(no_of_types = n(),
+            mean_RT= mean(RT, na.rm =T),
+            move_no = sum(outcome == "oops")+sum(outcome == "smooth"),
+            prop_good_moves = sum(outcome_type == "good_move")/move_no,
+            prop_shook = sum(outcome == "oops")/move_no,
+            no_lucky_good_moves = sum(outcome == "oops" & outcome_type == "good_move"),
+            sum_pressed_while_blue = sum(outcome == "while_blue"),
+            sum_pressed_while_red = sum(outcome == "while_red"),
+            sum_pressed_too_soon = sum(outcome == "error"),
+           phq_total = phq_total%>% first,
+            gad_total = gad_total[1],
+            pss_total = pss_total[1],
+            ius_total = ius_total[1],
+            shaps_total = shaps_total[1],
+  )  %>% ungroup()  %>% 
+  mutate(shaps_total_s = shaps_total %>% ave(FUN = scale),
+               shaps_total_f = shaps_total_s>0 )
+  
+movedata_ins %>%  ggplot(aes(x=shaps_total_f, y = mean_RT)) + geom_point(alpha = 0.1, width = 0.1) +
+  geom_smooth(method= "lm") + facet_wrap(~move_types)
+
+movedata_ins %>%  ggplot(aes(x=shaps_total_f, y = mean_RT)) + geom_jitter(alpha = 0.1, width = 0.1) +
+  geom_boxplot(alpha = 0.5) + facet_wrap(~move_types)
+
+
+                          
+# (movedata$RT > 3000) %>% mean(na.rm =T)
+
+# movedata %>% filter(RT>10000, relevant_move ==T) %>% glimpse
+
+
+```
+
+
+
+```{r}
+
+# quality checks
+trialdata$SESSION_ID  %>% unique %>% length
+
+lmer(trialdata, StressQ ~ prop_followed_command_s* + (prop_followed_command_s|SESSION_ID))
+
+trialdata  = trialdata %>% group_by(prolific_id) %>% summarize(total_trials = n(), 
+                                                  prop_goal_achieved =  sum(goal_achieved == T, na.rm = T) / total_trials,
+                                                  sum_further_goal_selected =  sum(goal_selected == 2, na.rm = T),
+                                                  sum_goals_achieved=  sum(goal_achieved == T, na.rm = T),
+                                                  sum_goals_failed=  sum(goal_achieved == F, na.rm = T)) %>% merge(trialdata, by=("prolific_id"))
+trialdata =  trialdata %>% filter(attention_check_ius == TRUE, attention_check_phq == TRUE, move_no >3, move_no < 50, long_moves ==0)
+
+
+trialdata  = trialdata %>% group_by(prolific_id) %>% summarize(total_trials_after_ex = n()) %>% merge(trialdata, by=("prolific_id"))
+
+trialdata2 =  trialdata %>% filter(prop_followed_command!=1)
+
+# trialdata =  trialdata %>% filter(attention_check_ius == TRUE, attention_check_phq == TRUE, move_no >3, move_no < 50, prolific_id %in% incl_ID)
+
+# no of participants
+trialdata$prolific_id %>% unique() %>% length
+
+
+ trialdata_blue$prolific_id %>% unique() %>% length
+
+```
+
+In a multilevel gamified behavioural assessment that collects several behavioral and subjective assessmnets, designed as a comprehensive measure of various mechanisms related to symptoms of mood disorders, such as depressed mood, anhedonia, and anxiety...
+
+N = 361 
+
+collected PHQ-8 and Shaps 
+
+Two measures of congitive effort - reaction times and errors:
+
+
+```{r}
+
+# effort/ anhedonia / cognitive effort / engagement 
+trialdata$shaps_total_s =  trialdata$shaps_total %>% ave(FUN = scale)
+
+trialdata$shaps_total_f  =  trialdata$shaps_total_s >0
+trialdata$phq_total_f  =  trialdata$phq_total_s >0
+trialdata$gad_total_f  =  trialdata$gad_total_s >0
+trialdata$ius_total_f  =  trialdata$ius_total_s >0
+trialdata$drsp_total_f  =  trialdata$drsp_total_s >0
+trialdata$pss_total_f  =  trialdata$pss_total_s >0
+trialdata$prop_followed_command_f  =  trialdata$prop_followed_command_s >0
+trialdata$prop_followed_command_fc  =  trialdata$prop_followed_command_sc >0
+
+trialdata = trialdata %>% mutate (phq_category = case_when(
+  phq_total <= 4 ~ "Minimal",
+  phq_total <= 9 ~ "Mild",
+  phq_total <= 14 ~ "Moderate",
+  phq_total <= 27 ~ "Moderately Severe/Severe",
+  TRUE ~ NA_character_ ) 
+)
+source("theme_functions.r")
+(trialdata$prop_relevant_moves == 1 ) %>% mean
+
+g_stress <- trialdata %>%  filter(prop_followed_command >0.15, prop_followed_command <0.8, !is.na(drsp_total_f)) %>%  
+  ggplot(aes(x=round(prop_followed_command*10)/10 , y = StressQ, group = drsp_total_f, colour =drsp_total_f)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+  theme_Publication()
+g_stress + xlab("control") + facet_wrap(~goal_achieved)
+
+g_attrib <- trialdata %>%  filter(prop_followed_command >0.15, prop_followed_command <0.8, !is.na(gad_total_f)) %>%  
+  ggplot(aes(x=round(prop_followed_command*10)/10 , y = AttribQ, group = gad_total_f, colour =gad_total_f)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+  theme_Publication()
+g_attrib + xlab("control") + facet_wrap(~goal_achieved)
+
+g_attrib <- trialdata %>%  filter(prop_followed_command >0.15, prop_followed_command <0.8, !is.na(gad_total_f)) %>%  
+  ggplot(aes(x=round(prop_followed_command*10)/10 , y = AttribQ_sc, group = gad_total_f, colour =gad_total_f)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+  theme_Publication()
+g_attrib + xlab("control") + facet_wrap(~goal_achieved)
+
+g_attrib <- trialdata %>%  filter(prop_followed_command >0.15, prop_followed_command <0.8, !is.na(gad_total_f)) %>%  
+  ggplot(aes(x=round(prop_followed_command*10)/10 , y = StressQ_sc, group = gad_total_f, colour =gad_total_f)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+  theme_Publication()
+g_attrib + xlab("control") + facet_wrap(~goal_achieved)
+
+g_attrib <- trialdata %>%  filter(prop_followed_command >0.15, prop_followed_command <0.8, !is.na(phq_category)) %>%  
+  ggplot(aes(x=round(prop_followed_command*10)/10 , y = StressQ_sc, group = phq_category, colour =phq_category)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+  theme_Publication()
+g_attrib + xlab("control") + facet_wrap(~goal_achieved)
+
+g_stress <- trialdata %>%  filter(prop_followed_command >0.15, prop_followed_command <0.8, !is.na(phq_category)) %>%  
+  ggplot(aes(x=round(prop_followed_command*10)/10 , y = StressQ, group = phq_category, colour =phq_category)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+  theme_Publication()
+g_stress + xlab("control") + facet_wrap(~goal_achieved)
+
+g_attrib <- trialdata %>%  filter(prop_followed_command >0.15, prop_followed_command <0.8, !is.na(phq_category)) %>%  
+  ggplot(aes(x=round(prop_followed_command*10)/10 , y = AttribQ, group = phq_category, colour =phq_category)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+  theme_Publication()
+g_attrib + xlab("control") + facet_wrap(~goal_achieved)
+
+g_enjoy <- trialdata %>%  filter(prop_followed_command >0.15, prop_followed_command <0.8, !is.na(phq_category)) %>%  
+  ggplot(aes(x=round(prop_followed_command*10)/10 , y = EnjoyQ, group = phq_category, colour =phq_category)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+  theme_Publication()
+g_enjoy + xlab("control") + facet_wrap(~goal_achieved)
+
+g_control <- trialdata %>%  filter(prop_followed_command >0.15, prop_followed_command <0.8, !is.na(phq_category)) %>%  
+  ggplot(aes(x=round(prop_followed_command*10)/10 , y = ControlQ, group = phq_category, colour =phq_category)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+  theme_Publication()
+g_control + xlab("control") + facet_wrap(~goal_achieved)
+
+g_motivation <- trialdata %>%  filter(prop_followed_command >0.15, prop_followed_command <0.8, !is.na(phq_category)) %>%  
+  ggplot(aes(x=round(prop_followed_command*10)/10 , y = MotivationQ_sc, group = group, colour =group)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+  theme_Publication()
+g_motivation + xlab("control") + facet_wrap(~goal_achieved)
+
+g_motivation <- trialdata %>%  filter(prop_followed_command >0.15, prop_followed_command <0.8, !is.na(phq_category)) %>%  
+  ggplot(aes(x=round(prop_followed_command*10)/10 , y = ControlQ, group = group, colour =group)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+  theme_Publication()
+g_motivation + xlab("control") + facet_wrap(~goal_achieved)
+
+g_motivation <- trialdata %>%  filter(prop_followed_command >0.15, prop_followed_command <0.8, !is.na(phq_category)) %>%  
+  ggplot(aes(x=round(prop_followed_command*10)/10 , y = ControlQ, group = group, colour =group)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+  theme_Publication()
+g_motivation + xlab("control") + facet_wrap(~goal_achieved)
+
+
+g_stress <- trialdata %>%  filter(prop_followed_command >0.15, prop_followed_command <0.8, !is.na(pss_total_f)) %>%  
+  ggplot(aes(x=round(prop_followed_command*10)/10 , y = StressQ, group = pss_total_f, colour =pss_total_f)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+  theme_Publication()
+g_stress + xlab("control") + facet_wrap(~goal_achieved)
+
+g_stress2 <- trialdata %>%  filter(prop_followed_command >0.15, prop_followed_command <0.8, !is.na(group)) %>%  
+  ggplot(aes(x=round(prop_followed_command*10)/10 , y = StressQ, group = group, colour =group)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+  theme_Publication()
+g_stress2 + xlab("control") #+ facet_wrap(~goal_achieved)
+
+g_stress3 <- trialdata %>%  filter(prop_followed_command >0.15, prop_followed_command <0.8, !is.na(cycle_phase), group == "female (cycling)" ) %>%  
+  ggplot(aes(x=round(prop_followed_command*10)/10 , y = StressQ, group = cycle_phase, colour =cycle_phase)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+  theme_Publication()
+g_stress3 + xlab("control")
+
+g_stress3 <- trialdata %>%  filter(prop_followed_command >0.15, prop_followed_command <0.8, !is.na(cycle_phase), group == "female (cycling)" ) %>%  ggplot(aes(x=round(prop_followed_command*10)/10 , y = AttribQ, group = cycle_phase, colour =cycle_phase)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+  theme_Publication()
+g_stress3 + xlab("control") + facet_wrap(~goal_achieved)
+
+plot_grid(g_stress2 + xlab("control"),
+          g_stress3 + xlab("control"))# + facet_wrap(~goal_achieved)
+library(cowplot)
+g_stress <- trialdata %>%  filter(prop_followed_command >0.15, prop_followed_command <0.8, !is.na(phq_category)) %>%  
+  ggplot(aes(x=round(prop_followed_command*10)/10 , y = StressQ, group = phq_total_f, colour =phq_total_f)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+  theme_Publication()
+g_stress + xlab("control")
+
+
+g_motivation
+
+g_motivation <- trialdata %>%  filter(prop_relevant_moves == 1, prop_followed_command >0, prop_followed_command <1) %>%  
+  ggplot(aes(x=round(prop_followed_command*10)/10 , y = mean_logRT, group = phq_category, colour =phq_category)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+  theme_Publication()
+g_motivation
+
+g_motivation <- trialdata %>%  filter(prop_relevant_moves == 1, prop_followed_command >0, prop_followed_command <1) %>%  
+  ggplot(aes(x=round(prop_followed_command*5)/5 , y = blue_errors, group = phq_total_f, colour =phq_total_f)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+  theme_Publication()
+g_motivation 
+
+g_motivation + facet_wrap(~goal_achieved)
+
+g_motivation <- trialdata %>%  ggplot(aes(x=goal_selected %>% as.factor(), y =shaps_total_s )) + geom_jitter(alpha = 0.1, width = 0.1) +
+  geom_boxplot(alpha = 0.5) #+ facet_wrap(~goal_selected)
+
+g_motivation <- trialdata %>%  ggplot(aes(x=shaps_total_f, y = sum_pressed_too_soon)) + geom_jitter(alpha = 0.1, width = 0.1) +
+  geom_boxplot(alpha = 0.5) + facet_wrap(~goal_achieved)
+
+g_motivation <- trialdata %>%  ggplot(aes(x=round(prop_followed_command*10)/10, y =MotivationQ, group = shaps_total_f, colour = shaps_total_f )) + stat_summary() + geom_smooth(method='lm', formula= y~x)  + theme_Publication()
+g_motivation
+
+g_motivation <- trialdata %>%  ggplot(aes(x=shaps_total_f, y = mean_logRT)) + geom_jitter(alpha = 0.1, width = 0.1) +
+  geom_boxplot(alpha = 0.5) + facet_wrap(~goal_achieved)
+
+g_motivation <- trialdata %>%  ggplot(aes(x=shaps_total_f, y = mean_logRT)) + geom_jitter(alpha = 0.1, width = 0.1) +
+  geom_boxplot(alpha = 0.5) + facet_wrap(~goal_achieved)
+
+g_motivation <- trialdata_blue %>%  ggplot(aes(x=shaps_total_f, y = Control_Learning)) + geom_jitter(alpha = 0.1, width = 0.1) +
+  geom_boxplot(alpha = 0.5) 
+
+
+(trialdata$prop_followed_command == 1) %>% mean()
+
+model1 = lmer(data =trialdata %>% filter(sum_goals_failed>3), StressQ ~ prop_followed_command_s +AttribQ_s*goal_achieved+ (prop_followed_command_s+ AttribQ_s*goal_achieved|prolific_id)) 
+model1 %>% summary
+
+lmer(data =trialdata, ControlQ ~ prop_followed_command_s + (prop_followed_command_s|prolific_id)) -> model1
+
+trialdata_blue$Control_Learning  = ranef(model1)$prolific_id$prop_followed_command_s + fixef(model1)[2]
+trialdata$Control_Learning = ranef(model1)$prolific_id$prop_followed_command_s
+
+
+lmer(data =trialdata, StressQ ~ prop_followed_command_s + (prop_followed_command_s|prolific_id)) -> model1
+trialdata_blue$Control_Stress  = ranef(model1)$prolific_id$prop_followed_command_s + fixef(model1)[2]
+
+lmer(data =trialdata, AttribQ ~ goal_achieved + (goal_achieved|prolific_id)) -> model1
+trialdata_blue$Attrib_Bias  = ranef(model1)$prolific_id$goal_achieved + fixef(model1)[2]
+
+trialdata_blue %>% 
+  ggplot(aes(x=phq_total , y = Attrib_Bias)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+  theme_Publication()
+
+trialdata_blue %>% 
+  ggplot(aes(x=ius_total , y = Attrib_Bias)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+  theme_Publication()
+
+trialdata_blue %>%  ggplot(aes(x=phq_total_f, y = Attrib_Bias)) + geom_jitter(alpha = 0.1, width = 0.1) +
+  geom_boxplot(alpha = 0.5) 
+
+
+lmer(data =trialdata2, ControlQ ~ prop_followed_command_s*shaps_total_s + (prop_followed_command_s|prolific_id)) %>% summary
+
+lmer(data = trialdata2, ControlQ ~ prop_followed_command_s*shaps_total_s + (prop_followed_command_s|prolific_id)) %>% summary
+
+lmer(data = trialdata2, ControlQ ~ prop_followed_command_s*phq_total_s + (prop_followed_command_s|prolific_id)) %>% summary
+
+lmer(data = trialdata, StressQ ~ prop_followed_command_s*phq_category + (prop_followed_command_s|prolific_id)) %>% summary
+
+
+
+lmer(data = trialdata2, ControlQ ~ prop_followed_command_s*gad_total_s + (prop_followed_command_s|prolific_id)) %>% summary
+
+lmer(data = trialdata2, ControlQ ~ prop_followed_command_s*pss_total_s + (prop_followed_command_s|prolific_id)) %>% summary
+
+lmer(data = trialdata2 , ControlQ ~ prop_followed_command_s*ius_total_s + (prop_followed_command_s|prolific_id)) %>% summary
+
+lmer(data = trialdata, StressQ ~ prop_followed_command_s*ius_total_s + (prop_followed_command_s|prolific_id)) %>% summary
+
+
+lmer(data = trialdata2 %>% filter(total_trials > 15), StressQ ~ prop_followed_command_s*phq_total_s + (prop_followed_command_s|prolific_id)) %>% summary
+
+
+lmer(data = trialdata2, StressQ ~ prop_shook*shaps_total_s + (prop_shook|prolific_id)) %>% summary
+
+lmer(data = trialdata %>% filter(sum_goals_failed>3), AttribQ ~ goal_achieved*shaps_total_s + (goal_achieved|prolific_id)) %>% summary
+
+
+lmer(data = trialdata2, StressQ ~ prop_shook*(phq_item1 + phq_item2+ gad_item1) + (prop_shook|prolific_id)) %>% summary
+
+lmer(data = trialdata2, StressQ ~ prop_shook*(phq_total_s + gad_total_s + shaps_total_s) + (prop_shook|prolific_id)) %>% summary
+
+lmer(data = trialdata %>% filter(sum_goals_failed>3), AttribQ ~ goal_achieved*phq_total_s + (goal_achieved|prolific_id)) %>% summary
+
+
+lmer(data = trialdata%>% filter(sum_goals_failed>3), StressQ ~ prop_followed_command_s*phq_total_s + (prop_followed_command_s|prolific_id)) %>% summary
+
+lmer(data = trialdata2, AttribQ ~ goal_achieved*phq_total_s + (goal_achieved|prolific_id)) %>% summary
+
+lmer(data = trialdata2, StressQ ~ prop_shook*gad_total_s + (prop_shook|prolific_id)) %>% summary
+lmer(data = trialdata2, AttribQ ~ goal_achieved*gad_total_s + (goal_achieved|prolific_id)) %>% summary
+
+lmer(data = trialdata2%>% filter(sum_goals_failed>3), StressQ ~ prop_shook*pss_total_s + (prop_shook|prolific_id)) %>% summary
+
+lmer(data = trialdata2, AttribQ ~ goal_achieved*pss_total_s + (goal_achieved|prolific_id)) %>% summary
+
+lmer(data = trialdata2, StressQ ~ prop_shook*ius_total_s + (prop_shook|prolific_id)) %>% summary
+lmer(data = trialdata2, AttribQ ~ goal_achieved*ius_total_s + (goal_achieved|prolific_id)) %>% summary
+
+glmer(data = trialdata, goal_selected==2 ~ ControlQ_s*ius_total_s + (ControlQ_s|prolific_id), family = "binomial") %>% summary
+glmer(data = trialdata, goal_selected==2 ~ prop_followed_command_s*ius_total_s + (prop_followed_command_s|prolific_id), family = "binomial") %>% summary
+
+trialdata$large_goal_selected = trialdata$goal_selected == F
+
+lmer(data = trialdata, MotivationQ ~ goal_achieved*shaps_total_s + (goal_achieved|prolific_id)) %>% summary
+lmer(data = trialdata, MotivationQ ~ (large_goal_selected + ControlQ_s)*shaps_total_s + (large_goal_selected + ControlQ_s|prolific_id)) %>% summary
+
+lmer(data = trialdata, StressQ ~ (large_goal_selected + ControlQ_s)*shaps_total_s + (large_goal_selected + ControlQ_s|prolific_id)) %>% summary
+
+
+lmer(data = trialdata, MotivationQ ~ goal_achieved*shaps_total_s + (goal_achieved|prolific_id)) %>% summary
+lmer(data = trialdata, MotivationQ ~ goal_achieved*phq_total_s + (goal_achieved|prolific_id)) %>% summary
+
+lmer(data = trialdata, MotivationQ ~ goal_achieved*gad_total_s + (goal_achieved|prolific_id)) %>% summary
+lmer(data = trialdata, MotivationQ ~ goal_achieved*pss_total_s + (goal_achieved|prolific_id)) %>% summary
+lmer(data = trialdata, MotivationQ ~ goal_achieved*ius_total_s + (goal_achieved|prolific_id)) %>% summary
+
+
+lmer(data = trialdata, ControlQ ~ goal_achieved*shaps_total_s + (goal_achieved|prolific_id)) %>% summary
+lmer(data = trialdata, ControlQ ~ (goal_achieved + trial_number)*phq_total_s + (goal_achieved + trial_number|prolific_id)) %>% summary
+lmer(data = trialdata, ControlQ ~ goal_achieved*gad_total_s + (goal_achieved|prolific_id)) %>% summary
+lmer(data = trialdata, ControlQ ~ goal_achieved*pss_total_s + (goal_achieved|prolific_id)) %>% summary
+lmer(data = trialdata, ControlQ ~ goal_achieved*ius_total_s + (goal_achieved|prolific_id)) %>% summary
+
+
+
+lmer(data = trialdata%>% filter(total_trials_after_ex>15), StressQ ~ prop_followed_command_s*phq_category + (prop_followed_command_s|prolific_id)) %>% summary
+
+lmer(data = trialdata, MotivationQ ~ prop_followed_command_s*shaps_total_s + (prop_followed_command_s|prolific_id)) %>% summary
+
+lmer(data = trialdata, AttribQ ~ goal_achieved*shaps_total_s + (goal_achieved|prolific_id)) %>% summary
+
+lmer(data = trialdata, AttribQ ~ goal_achieved*phq_total_s + (goal_achieved|prolific_id)) %>% summary
+lmer(data = trialdata, AttribQ ~ goal_achieved*gad_total_s + (goal_achieved|prolific_id)) %>% summary
+lmer(data = trialdata, AttribQ ~ goal_achieved*ius_total_s + (goal_achieved|prolific_id)) %>% summary
+
+
+
+model1 <- lmer(data = trialdata2, StressQ ~ ControlQ_s +  (ControlQ_s|prolific_id))
+ranef(model1)$prolific_id$ControlQ_s %>% glimpse
+
+glmer(data = trialdata, goal_achieved ~ prop_followed_command_s*pss_total_s + (prop_followed_command_s|prolific_id), family ="binomial") %>% summary
+glmer(data = trialdata, goal_achieved ~ prop_followed_command_s*pss_total_s + (prop_followed_command_s|prolific_id), family ="binomial") %>% summary
+trialdata$ArousalQ = trialdata$MotivationQ +trialdata$StressQ
+trialdata$ValenceQ = trialdata$MotivationQ -trialdata$StressQ
+
+lmer(data = trialdata, ArousalQ ~ goal_achieved*shaps_total_s + (goal_achieved|prolific_id)) %>% summary
+
+lmer(data = trialdata, ArousalQ ~ goal_achieved*phq_total_s + (goal_achieved|prolific_id)) %>% summary
+
+lmer(data = trialdata, ValenceQ ~ goal_achieved*shaps_total_s + (goal_achieved|prolific_id)) %>% summary
+
+lmer(data = trialdata, ValenceQ ~ goal_achieved*phq_total_s + (goal_achieved|prolific_id)) %>% summary
+
+
+
+
+lmer(data = trialdata, MotivationQ ~ goal_achieved*gad_total_s + (goal_achieved|prolific_id)) %>% summary
+
+lmer(data = trialdata, MotivationQ ~ goal_achieved*gad_total_s + (goal_achieved|prolific_id)) %>% summary
+
+lmer(data = trialdata %>% filter(RT<0.750), mean_logRT ~ goal_achieved*shaps_total_s + (goal_achieved|prolific_id)) %>% summary
+
+model = lmer(data = trialdata , mean_logRT ~ shaps_total_s + (1|prolific_id))
+library(performance)
+
+
+trialdata_sum = trialdata %>% group_by(prolific_id) %>% summarize(mean_logRT = mean(mean_logRT, na.rn =T),
+                                                                  blue_errors = mean(blue_errors, na.rn =T),
+                                                                  shaps_total = shaps_total%>% first,
+                                                                  phq_total = phq_total%>% first,
+                                                                  phq_item1 = phq_item1 %>% first(),
+                                                                  phq_item2 = phq_item2 %>% first())
+
+```
+
+```{r}
+## participant level data #####
+
+
+trialdata$DiffSkillQ = trialdata$PostSkillQ - trialdata$PreSkillQ
+trialdata$DiffPerfQ = trialdata$PostPerfQ - trialdata$PrePerfQ
+
+trialdata_blue =  trialdata %>% 
+  filter(num_blue >0) %>% #, total_trials_after_ex>15) %>% 
+  group_by(prolific_id) %>% 
+  summarize(prop_relevant_moves = prop_relevant_moves %>% mean(na.rm = T),
+            mean_logRT = mean(mean_logRT, na.rn =T),
+            blue_errors = mean(sum(num_whileblue)/sum(num_blue), na.rm =T),
+            total_blue_errors =sum(num_whileblue),
+            shaps_total = shaps_total%>% first,
+            outcome_total  = outcome_total  %>% sum(na.rm = T), 
+            phq_total = phq_total%>% first,
+            phq_item1 = phq_item1 %>% first(),
+            phq_item2 = phq_item2 %>% first(),
+            gad_total = gad_total[1],
+            pss_total = pss_total[1],
+            PreSkillQ = PreSkillQ[1],
+            PrePerfQ = PrePerfQ[1],
+            DiffSkillQ = DiffSkillQ[1],
+            DiffPerfQ = DiffPerfQ[1],
+             ius_total = ius_total[1],
+            ius_prospective = ius_prospective[1],
+            ius_inhibitory = ius_inhibitory[1],
+            shaps_total_f = shaps_total_f[1],
+            mean_goal_achieved = mean(goal_achieved == T, na.rm =T),
+            mean_higher_goal = mean(goal_selected ==2, na.rm =T),
+            MotivationQ = MotivationQ %>% mean(na.rm =T)) %>% 
+  mutate(log_blue_errors = (blue_errors+1)%>% log ,
+         log_blue_errors_s = log_blue_errors %>% ave(FUN = scale),
+         mean_logRT_s = mean_logRT %>% ave(FUN = scale),
+         total_gonogo = log_blue_errors_s + mean_logRT_s,
+        phq_category = case_when(
+      phq_total <= 4 ~ "Minimal",
+      phq_total <= 9 ~ "Mild",
+      phq_total <= 14 ~ "Moderate",
+      phq_total <= 27 ~ "Moderately Severe/Severe",
+      TRUE ~ NA_character_ ) # fallback for unexpected values)
+)
+g_motivation <- trialdata_blue %>%  ggplot(aes(x=shaps_total_f, y = blue_errors)) + geom_jitter(alpha = 0.1, width = 0.1) +
+  geom_boxplot(alpha = 0.5) 
+g_motivation
+
+cor.test(trialdata_blue$ius_prospective, trialdata_blue$ius_inhibitory, use = "complete.obs")
+
+cor.test(trialdata_blue$outcome_total, trialdata_blue$shaps_total, use = "complete.obs")
+cor.test(trialdata_blue$sum_goal_achieved, trialdata_blue$shaps_total, use = "complete.obs")
+cor.test(trialdata_blue$sum_goal_achieved, trialdata_blue$shaps_total, use = "complete.obs")
+cor.test(trialdata_blue$MotivationQ, trialdata_blue$shaps_total, use = "complete.obs")
+
+cor.test(trialdata_blue$mean_logRT, trialdata_blue$phq_total, use = "complete.obs")
+cor.test(trialdata_blue$mean_logRT, trialdata_blue$phq_item1, use = "complete.obs")
+cor.test(trialdata_blue$mean_logRT, trialdata_blue$phq_item2, use = "complete.obs")
+
+cor.test(trialdata_blue$total_gonogo, trialdata_blue$shaps_total, use = "complete.obs")
+cor.test(trialdata_blue$total_gonogo, trialdata_blue$phq_total, use = "complete.obs")
+cor.test(trialdata_blue$total_gonogo, trialdata_blue$gad_total, use = "complete.obs")
+cor.test(trialdata_blue$total_gonogo, trialdata_blue$pss_total, use = "complete.obs")
+cor.test(trialdata_blue$total_gonogo, trialdata_blue$ius_total, use = "complete.obs")
+
+cor.test(trialdata_blue$total_blue_errors, trialdata_blue$shaps_total, use = "complete.obs")
+cor.test(trialdata_blue$total_blue_errors, trialdata_blue$phq_total, use = "complete.obs")
+cor.test(trialdata_blue$log_blue_errors, trialdata_blue$gad_total, use = "complete.obs")
+cor.test(trialdata_blue$log_blue_errors, trialdata_blue$pss_total, use = "complete.obs")
+cor.test(trialdata_blue$log_blue_errors, trialdata_blue$ius_total, use = "complete.obs")
+
+cor.test(trialdata_blue$DiffSkillQ, trialdata_blue$shaps_total, use = "complete.obs")
+cor.test(trialdata_blue$DiffSkillQ, trialdata_blue$phq_total, use = "complete.obs")
+cor.test(trialdata_blue$DiffSkillQ, trialdata_blue$gad_total, use = "complete.obs")
+cor.test(trialdata_blue$DiffSkillQ, trialdata_blue$pss_total, use = "complete.obs")
+cor.test(trialdata_blue$DiffSkillQ, trialdata_blue$ius_total, use = "complete.obs")
+
+cor.test(trialdata_blue$DiffPerfQ, trialdata_blue$shaps_total, use = "complete.obs")
+cor.test(trialdata_blue$DiffPerfQ, trialdata_blue$phq_total, use = "complete.obs")
+cor.test(trialdata_blue$DiffPerfQ, trialdata_blue$gad_total, use = "complete.obs")
+cor.test(trialdata_blue$DiffPerfQ, trialdata_blue$pss_total, use = "complete.obs")
+cor.test(trialdata_blue$DiffPerfQ, trialdata_blue$ius_total, use = "complete.obs")
+
+cor.test(trialdata_blue$PreSkillQ, trialdata_blue$shaps_total, use = "complete.obs")
+cor.test(trialdata_blue$PreSkillQ, trialdata_blue$phq_total, use = "complete.obs")
+cor.test(trialdata_blue$PreSkillQ, trialdata_blue$gad_total, use = "complete.obs")
+cor.test(trialdata_blue$PreSkillQ, trialdata_blue$pss_total, use = "complete.obs")
+cor.test(trialdata_blue$PreSkillQ, trialdata_blue$ius_total, use = "complete.obs")
+
+cor.test(trialdata_blue$PrePerfQ, trialdata_blue$shaps_total, use = "complete.obs")
+cor.test(trialdata_blue$PrePerfQ, trialdata_blue$phq_total, use = "complete.obs")
+cor.test(trialdata_blue$PrePerfQ, trialdata_blue$gad_total, use = "complete.obs")
+cor.test(trialdata_blue$PrePerfQ, trialdata_blue$pss_total, use = "complete.obs")
+cor.test(trialdata_blue$PrePerfQ, trialdata_blue$ius_total, use = "complete.obs")
+
+
+cor.test(trialdata_blue$outcome_total, trialdata_blue$shaps_total, use = "complete.obs")
+cor.test(trialdata_blue$outcome_total, trialdata_blue$phq_total, use = "complete.obs")
+cor.test(trialdata_blue$outcome_total, trialdata_blue$gad_total, use = "complete.obs")
+cor.test(trialdata_blue$outcome_total, trialdata_blue$pss_total, use = "complete.obs")
+cor.test(trialdata_blue$outcome_total, trialdata_blue$ius_total, use = "complete.obs")
+
+cor.test(trialdata_blue$mean_higher_goal, trialdata_blue$shaps_total, use = "complete.obs")
+cor.test(trialdata_blue$mean_higher_goal, trialdata_blue$phq_total, use = "complete.obs")
+cor.test(trialdata_blue$mean_higher_goal, trialdata_blue$gad_total, use = "complete.obs")
+cor.test(trialdata_blue$mean_higher_goal, trialdata_blue$pss_total, use = "complete.obs")
+cor.test(trialdata_blue$mean_higher_goal, trialdata_blue$ius_total, use = "complete.obs")
+
+cor.test(trialdata_blue$mean_goal_achieved, trialdata_blue$shaps_total, use = "complete.obs")
+cor.test(trialdata_blue$mean_goal_achieved, trialdata_blue$phq_total, use = "complete.obs")
+cor.test(trialdata_blue$mean_goal_achieved, trialdata_blue$gad_total, use = "complete.obs")
+cor.test(trialdata_blue$mean_goal_achieved, trialdata_blue$pss_total, use = "complete.obs")
+cor.test(trialdata_blue$mean_goal_achieved, trialdata_blue$ius_total, use = "complete.obs")
+
+
+
+cor.test(trialdata_blue$outcome_total, trialdata_blue$shaps_total, use = "complete.obs")
+
+cor.test(trialdata_blue$total_gonogo, trialdata_blue$pss_total, use = "complete.obs")
+
+
+cor.test(trialdata_blue$log_blue_errors, trialdata_sum$phq_item1, use = "complete.obs")
+cor.test(trialdata_blue$log_blue_errors, trialdata_sum$phq_item2, use = "complete.obs")
+
+
+
+cor(trialdata_sum$mean_logRT, trialdata_sum$blue_errors, use = "complete.obs")
+
+lm(data = trialdata , mean_logRT ~ shaps_total_s + (prop_followed_command_s*goal_achieved|prolific_id)) %>% summary
+
+lmer(data = trialdata , mean_logRT ~ shaps_total_s*prop_followed_command_s*goal_achieved + (prop_followed_command_s*goal_achieved|prolific_id)) %>% summary
+
+lmer(data = trialdata %>% filter(goal_achieved == T), mean_logRT ~ prop_followed_command_s*shaps_total + (prop_followed_command_s|prolific_id)) %>% summary
+
+
+
+lmer(data = trialdata, blue_errors ~ ControlQ_s*shaps_total + (ControlQ_s|prolific_id)) %>% summary
+
+lmer(data = trialdata, blue_errors ~ shaps_total + (1|prolific_id)) %>% summary
+
+
+trialdata_blue %>%  ggplot(aes(x=shaps_total, y = mean_logRT)) + geom_point(alpha = 0.1, width = 0.1) +
+  geom_smooth(method = "lm")
+  geom_boxplot(alpha = 0.5) 
+
+
+trialdata_blue %>%  ggplot(aes(x=shaps_total_f, y = mean_logRT)) + geom_jitter(alpha = 0.1, width = 0.1) +
+  geom_boxplot(alpha = 0.5) 
+
+trialdata_blue %>%  ggplot(aes(x=phq_category, y = mean_logRT)) + geom_jitter(alpha = 0.1, width = 0.1) +
+  geom_boxplot(alpha = 0.5) 
+
+
+trialdata_blue %>%  ggplot(aes(x=phq_category, y = mean_logRT)) + geom_jitter(alpha = 0.1, width = 0.1) +
+  geom_boxplot(alpha = 0.5) 
+
+g_attrib_success<- trialdata %>% 
+  group_by(prolific_id, goal_achieved) %>% 
+  summarize(AttribQ = mean(AttribQ, na.rm = TRUE)) %>%
+  group_by(goal_achieved) %>%
+  summarize(N = n(),
+            mean_AttribQ = mean(AttribQ, na.rm = TRUE),
+            se_AttribQ = sd(AttribQ, na.rm = TRUE)/sqrt(N)) %>% 
+  ggplot(aes(x=goal_achieved, y = mean_AttribQ)) + 
+ 
+  geom_errorbar(aes(ymin=mean_AttribQ - se_AttribQ, ymax =mean_AttribQ + se_AttribQ), width =0) + 
+ geom_bar(size = 2, colour = "black", stat = "identity")   + theme_Publication() + ylab("chance to merit")
+g_attrib_success
+
+
+```
+
+
+
+```{r}
+
+# control
+g_control <- trialdata %>%  ggplot(aes(x=ControlQ, y = prop_followed_command)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+ scale_x_reverse() + xlab("subjective control") + theme_Publication()
+g_control
+
+g_control <- trialdata %>%
+  ggplot(aes(x = ControlQ, y = prop_followed_command, group = prolific_id)) +
+  geom_line(alpha = 0.2) +  # one line per participant
+  geom_smooth(aes(group = 1), method = "lm", formula = y ~ x, se = FALSE, color = "black", size = 1.2) +
+  scale_x_reverse() +
+  xlab("Subjective Control") +
+  ylab("Proportion Followed Command") +
+  theme_Publication()
+g_control
+
+
+betas_control <- matrix(NA, nrow = trialdata2$prolific_id %>% unique %>% length)
+
+
+
+betas_control[,s] = coef(model1)[,2]
+}
+ICC(betas_control)
+cor_table <- as.data.frame(cor(betas_control))
+rownames(cor_table) = c("s1", "s2", "s3", "s4")
+colnames(cor_table) = c("s1", "s2", "s3", "s4")
+
+print(cor_table)
+# print(xtable(cor(betas_control)), type = "latex")
+plot(cor(betas_control))
+
+ggcorrplot(cor(betas_control)) 
+
+```
+
+# Choice behavior
+Looking at goal choosing. Do participants adapt to the closer goal as control goes down?
+```{r}
+
+# trialdata$goal_achieved_plot[trialdata$goal_achieved == 0] = NA
+(round(trialdata$ControlQ/5)*5 )%>% hist
+trialdata$ControlQ %>% hist
+g_goal_control <- ggplot(trialdata, aes(x = round(ControlQ/5)*5, y = goal_achieved)) + stat_summary() + theme_Publication() +geom_smooth(method='lm', formula= y~x) #,
+
+g_goal_control
+```
+
+
+Looking at individual plots in session 1. Note that some choose the closer goal all the time.
+```{r}
+g_id_all <- trialdata %>% filter(prolific_id %in% c(41:100), session ==1) %>% ggplot(aes(x = trial, y = goalChosen01)) +theme_minimal() + geom_point() + facet_wrap(~prolific_id) +geom_line(aes(y= prop_followed_command)) + geom_point(aes(y = goal_achieved_plot), colour= "red") + geom_line(aes(y=(0.4 + ControlQ*0.6/100)),colour= "blue")
+g_id_all
+```
+
+# Stress vs control
+
+```{r plot stress, fig.height= 6, fig.width=10}
+# all trials
+
+g_stress <- trialdata %>% mutate(ControlQ_binned = round(ControlQ/5)*5) %>%  ggplot(aes(x=ControlQ_binned, y = StressQ)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+ scale_x_reverse() + xlab("subjective control") + theme_Publication()
+g_stress
+g_stress + facet_wrap(~goal_achieved)
+
+g_stress <- trialdata %>% mutate(ControlQ_binned = round(ControlQ/5)*5) %>%  ggplot(aes(x=ControlQ_binned, y = StressQ)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+ scale_x_reverse() + xlab("subjective control") + theme_Publication()
+
+g_stress_prop <- trialdata %>%  ggplot(aes(x=round(prop_shook*10)/10, y = StressQ)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+ scale_x_reverse() + xlab("proportion of shook") + theme_Publication()
+g_stress_prop
+
+g_stress_control <- trialdata %>%  ggplot(aes(x=round(control*20)/20, y = StressQ)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+ scale_x_reverse() + xlab("control") + theme_Publication()
+
+g_stress_prop + facet_wrap(~pscCluster)
+g_stress_control + facet_wrap(~pscCluster)
+
+trialdata = trialdata %>% mutate(prop_shook_s = prop_shook %>% ave(FUN = scale))
+model_stress_pss <- lmer(data = trialdata, StressQ ~ prop_followed_command_s*pss_total_s + (prop_followed_command_s|prolific_id))
+
+model_stress_pss %>% summary
+
+model_stress_pss <- lmer(data = trialdata, StressQ ~ ControlQ_s*pss_total_s + (ControlQ_s|prolific_id))
+
+model_stress_pss <- lmer(data = trialdata, StressQ ~ prop_followed_command_s*phq_total_s + (prop_followed_command_s|prolific_id))
+
+lmer(data = trialdata, AttribQ ~ goal_achieved*phq_total_s + (goal_achieved|prolific_id)) %>% summary
+
+lmer(data = trialdata, StressQ ~ goal_achieved*phq_total_s + (goal_achieved|prolific_id)) %>% summary
+
+
+``` 
+
+```{r plot stress across win/loss conditions across trials, fig.height= 6, fig.width=10}
+
+g_stress_loss <- subset(trialdata, loss1 > 0) %>% ggplot(aes(x=trial, y = StressQ)) + stat_summary() + geom_smooth(method='lm', formula= y~x)
+
+g_stress_win <- subset(trialdata, loss1 = 0) %>% ggplot(aes(x=trial, y = StressQ)) + stat_summary() + geom_smooth(method='lm', formula= y~x)
+
+plot_grid(g_stress_loss +facet_wrap(~session), g_stress_win +facet_wrap(~session), nrow = 1)
+
+```
+
+The effects of subjective and objective control on self reported stress test retest well.
+```{r check trial level trt}
+
+# kick out subject 40
+
+trialdata_reduced<- trialdata %>% filter(prolific_id !=40)
+
+# get a "control vs stress" slope for each session with a linear mixed model
+
+sess_no = 4
+betas_control <- matrix(NA, ncol =sess_no, nrow = 39)
+
+for (s in c(1:sess_no)) { 
+model1 <- lme(data = subset(trialdata_reduced, session == s), StressQ ~ ControlQ, random = ~ControlQ|prolific_id, na.action = na.exclude, method = "ML")
+betas_control[,s] = coef(model1)[,2]
+}
+ICC(betas_control)
+cor_table <- as.data.frame(cor(betas_control))
+rownames(cor_table) = c("s1", "s2", "s3", "s4")
+colnames(cor_table) = c("s1", "s2", "s3", "s4")
+
+print(cor_table)
+# print(xtable(cor(betas_control)), type = "latex")
+plot(cor(betas_control))
+
+ggcorrplot(cor(betas_control)) 
+```
+
+# Attribution bias
+
+Looking at the attribution bias, and its relationship to the Locus of control scale 
+
+```{r, fig.width=15}
+g_attrib_success<- trialdata %>% 
+  group_by(prolific_id, goal_achieved) %>% 
+  summarize(AttribQ = mean(AttribQ, na.rm = TRUE)) %>%
+  group_by(goal_achieved) %>%
+  summarize(N = n(),
+            mean_AttribQ = mean(AttribQ, na.rm = TRUE),
+            se_AttribQ = sd(AttribQ, na.rm = TRUE)/sqrt(N)) %>% 
+  ggplot(aes(x=goal_achieved, y = mean_AttribQ)) + 
+ 
+  geom_errorbar(aes(ymin=mean_AttribQ - se_AttribQ, ymax =mean_AttribQ + se_AttribQ), width =0) + 
+ geom_bar(size = 2, colour = "black", stat = "identity")   + theme_Publication() + ylab("chance to merit")
+g_attrib_success
+
+g_attrib_success_int<- trialdata %>% mutate(goal_achieved_f = factor(goal_achieved_f, labels = c("U", "S")), 
+                                            intCluster = factor(intCluster, levels = c(0,1,2), labels = c("low", "mid", "high"))) %>% 
+  group_by(prolific_id, goal_achieved_f, intCluster) %>% 
+  summarize(AttribQ = mean(AttribQ, na.rm = TRUE)) %>%
+  group_by(goal_achieved_f, intCluster) %>%
+  summarize(N = n(),
+            mean_AttribQ = mean(AttribQ, na.rm = TRUE),
+            se_AttribQ = sd(AttribQ, na.rm = TRUE)/sqrt(N)) %>% 
+  ggplot(aes(x=goal_achieved_f, y = mean_AttribQ)) + 
+ 
+  geom_errorbar(aes(ymin=mean_AttribQ - se_AttribQ, ymax =mean_AttribQ + se_AttribQ), width =0) + 
+ geom_bar(size = 2, colour = "black", stat = "identity")   + facet_wrap( ~intCluster) + theme_Publication() + ylab("chance to merit") 
+
+g_attrib_success_int
+
+g_attrib_int<- trialdata %>% 
+    ggplot(aes(x=AttribQ, y = Internality)) + stat_summary() + geom_smooth(method='lm', formula= y~x)+ theme_Publication()+ xlab("chance to merit")
+ 
+  geom_errorbar(aes(ymin=mean_AttribQ - se_AttribQ, ymax =mean_AttribQ + se_AttribQ), width =0) + 
+ geom_bar(size = 2, colour = "black", stat = "identity")   + facet_wrap( ~intCluster) + theme_Publication() + ylab("chance to merit")
+
+plot_grid(g_attrib_success , g_attrib_success_int, g_attrib_int , nrow =1 )
+
+```
+# Test-retest of the attribution bias 
+
+```{r trt of AB}
+
+sess_no = 4
+betas_control <- matrix(NA, ncol =sess_no, nrow = 38)
+
+# trialdata$prolific_id %>% unique() %>% setdiff(rownames(coef(model1)) %>% as.numeric()) 
+
+for (s in c(1:sess_no)) {
+model1 <- lme(data = trialdata %>% filter(session == s, prolific_id != 40, prolific_id !=26), AttribQ ~ goal_achieved_f, random = ~goal_achieved_f|prolific_id, na.action = na.exclude, method = "ML")
+betas_control[,s] = coef(model1)[,2]
+}
+ICC(betas_control)
+cor_table <- as.data.frame(cor(betas_control))
+rownames(cor_table) = c("s1", "s2", "s3", "s4")
+colnames(cor_table) = c("s1", "s2", "s3", "s4")
+
+print(cor_table)
+# mean betas with internality??
+Intscores <- trialdata %>% filter(session == 1, prolific_id != 40, prolific_id !=26) %>% group_by(prolific_id) %>% summarize(Internality = Internality[1]) %>% select(Internality)
+summary(lm(rowMeans(betas_control) ~ Intscores[["Internality"]]))
+
+
+```
+
+# Attribution bias and stress?
+
+```{r trt of AB}
+
+g_attrib_success_psc<- trialdata %>% mutate(goal_achieved_f = factor(goal_achieved_f, labels = c("U", "S"))) %>% 
+  group_by(prolific_id,  goal_achieved_f, pscCluster) %>% 
+  summarize(AttribQ = mean(AttribQ, na.rm = TRUE)) %>%
+  group_by(goal_achieved_f, pscCluster) %>%
+  summarize(N = n(),
+            mean_AttribQ = mean(AttribQ, na.rm = TRUE),
+            se_AttribQ = sd(AttribQ, na.rm = TRUE)/sqrt(N)) %>% 
+  ggplot(aes(x=goal_achieved_f, y = mean_AttribQ)) + 
+ 
+  geom_errorbar(aes(ymin=mean_AttribQ - se_AttribQ, ymax =mean_AttribQ + se_AttribQ), width =0) + 
+ geom_bar(size = 2, colour = "black", stat = "identity")   + facet_wrap( ~pscCluster ) + theme_Publication() + ylab("chance to merit") 
+
+g_attrib_success_psc
+
+
+model_stress_psc <- lmer(data = trialdata, AttribQ ~ goal_achieved_f*psc_total + (goal_achieved_f|prolific_id))
+model_stress_psc %>% summary
+
+```
+
+```{r dags}
+## dags with trial data
+library(dagitty)
+
+movedata<- movedata %>% mutate(ControlQ_s = ControlQ %>% ave(FUN = scale),
+                                                           StressQ_s=  StressQ %>% ave(FUN = scale),
+                                                           prop_followed_command_s = prop_followed_command%>% ave(FUN = scale),
+                                          AttribQ_s = AttribQ   %>% ave(FUN = scale))
+
+
+movedata_trial = movedata %>% 
+  group_by(prolific_id, session, trial) %>% 
+  summarize(N = n(),
+            mean_log_rt = mean(log_rt, na.rm = T),
+            initial_log_rt = mean(log_rt[1:3], na.rm = T),
+            belief_control =mu1_vect[last_move],
+            max_move = max(move),
+            numGoodNotIntended = numGoodNotIntended[1],
+            ControlQ_s = ControlQ_s[1],
+            StressQ_s = StressQ_s[1],
+            prop_followed_command_s = prop_followed_command_s[1],
+            AttribQ_s = AttribQ_s[1],
+            mu_vect = mu_vect[1],
+            mu2_vect = mu2_vect %>% mean(),
+            pi2_vect = pi2_vect %>% mean(),
+            goalChosen01 = goalChosen01[1],
+            goal_achieved = goal_achieved[1],
+            trialtype = trialtype[1],
+    pi_control_win_par = pi_control_win_par[1],
+            om_control_win_par = om_control_win_par[1],
+            pi_control_loss_par = pi_control_loss_par[1],
+            om_control_loss_par = om_control_loss_par[1],
+            nu_tr_par = nu_tr_par[1],
+            loss_bias_tr_par = loss_bias_tr_par[1],
+            pi_control_win_par_refit = pi_control_win_par_refit[1],
+            om_control_win_par_refit = om_control_win_par_refit[1],
+            pi_control_loss_par_refit = pi_control_loss_par_refit[1],
+            om_control_loss_par_refit = om_control_loss_par_refit[1],
+            nu_tr_par_refit = nu_tr_par_refit[1],
+            loss_bias_tr_par_refit = loss_bias_tr_par_refit[1],Internality_s = Internality_s[1], 
+            Chance_s = Chance_s[1],
+            PowerfulOthers_s= PowerfulOthers_s[1],
+            psc_total_s= psc_total_s[1],
+            Bis_total_s= Bis_total_s[1],
+            Bis_Self_Control_s = Bis_Self_Control_s[1],
+            BAS_drive_s= BAS_drive_s[1],
+            BAS_funseeking_s= BAS_funseeking_s[1],
+            BAS_rewardresponsivness_s= BAS_rewardresponsivness_s[1],
+            BIS_s= BIS_s[1],
+            cti_total_s = cti_total_s[1],
+            Attachment_Anxiety_s= Attachment_Anxiety_s[1],
+            Attachment_Avoidance_s = Attachment_Avoidance_s[1]
+  ) %>% ungroup
+
+movedata_trial <- movedata_trial %>% mutate(
+    mu_vect_s = mu_vect %>% ave(FUN = scale),
+    mu2_vect_s = mu2_vect %>% ave(FUN = scale),
+    numGoodNotIntended = numGoodNotIntended/max_move)
+                       
+movedata_trial$numGoodNotIntended[movedata_trial$numGoodNotIntended < 0] = 0 
+movedata_trial$numGoodNotIntended[movedata_trial$numGoodNotIntended > 1] = 1 
+      
+movedata_trial$mu_attrib_t = movedata_trial$numGoodNotIntended*(movedata_trial$pi_control_loss_par*as.numeric(movedata_trial$trialtype == "LoseOnly") + movedata_trial$pi_control_win_par*as.numeric(movedata_trial$trialtype != "LoseOnly") )
+movedata_trial$mu_attrib_t_s = movedata_trial$mu_attrib_t      %>% ave(FUN = scale)        
+
+movedata_trial %>% saveRDS(file = "../../Data/movedata_trial.rds")
+
+# RQs
+# Does lack of control lead to stress? ####
+dagitty(' dag {
+bb="0,0,1,1"
+aQ [pos="0.501,0.249"]
+cQ [pos="0.163,0.337"]
+control [exposure,pos="0.160,0.106"]
+effort [pos="0.306,0.091"]
+o [pos="0.399,0.214"]
+sQ [outcome,pos="0.401,0.462"]
+aQ -> sQ
+cQ -> aQ
+cQ -> effort
+cQ -> sQ
+control -> cQ
+effort -> o
+o -> sQ } ')%>% plot
+
+
+## DAG 1 ####
+# does loss of control cause stress? 
+contrasts(movedata_trial$goal_achieved_f) <- c(-0.5,0.5)
+# total effect
+mod_stress_control_total <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  StressQ_s ~ prop_followed_command_s + (prop_followed_command_s |prolific_id) )
+summary(mod_stress_control_total)
+
+
+# direct effect, there is no direct effect of control on stress, once we control for beliefs about control
+
+mod_stress_control_total <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  StressQ_s ~ mu_vect_s + log(pi2_vect)+ prop_followed_command_s + (prop_followed_command_s+ mu_vect_s + pi2_vect |prolific_id) )
+summary(mod_stress_control_total)
+
+# direct effect, there is no direct effect of control on stress, once we control for beliefs about control and goals and attribution style
+mod_stress_control_att_o <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  StressQ_s ~ prop_followed_command_s + goal_achieved*AttribQ_s +mu_vect_s +(prop_followed_command_s + goal_achieved*AttribQ_s + mu_vect_s|prolific_id) )
+summary(mod_stress_control_att_o)
+
+#
+mod_stress_control_att_o <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  StressQ_s ~ prop_followed_command_s + goal_achieved*AttribQ_s +mu_vect_s +(prop_followed_command_s + goal_achieved*AttribQ_s + mu_vect_s|prolific_id) )
+summary(mod_stress_control_att_o)
+
+#### obj control goal on attrib
+mod <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  AttribQ_s ~ goal_achieved+ prop_followed_command_s +(goal_achieved+ prop_followed_command_s|prolific_id) )
+summary(mod)
+
+##### obj control goal on attrib with control beliefs
+
+mod <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  AttribQ_s ~ mu_vect_s + goal_achieved + prop_followed_command_s +(mu_vect_s+goal_achieved+ prop_followed_command_s|prolific_id) )
+summary(mod)
+
+##### obj control goal on attrib with control beliefs and "attribution par" 
+mod <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  AttribQ_s ~ mu_vect_s+ goal_achieved*mu_attrib_t_s+ prop_followed_command_s +(mu_vect_s*goal_achieved +prop_followed_command_s + mu_attrib_t_s|prolific_id) )
+summary(mod)
+
+mod <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  AttribQ_s ~ goal_achieved + prop_followed_command_s +(goal_achieved +prop_followed_command_s|prolific_id) )
+summary(mod)
+
+mod2 <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  AttribQ_s ~ goal_achieved*prop_followed_command_s +(goal_achieved*prop_followed_command_s|prolific_id) )
+summary(mod2)
+
+
+anova(mod, mod2)
+mod <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1, session == 1),  AttribQ_s ~ mu_vect_s+ goal_achieved+ prop_followed_command_s + (pi_control_loss_par + pi_control_win_par) +(mu_vect_s+goal_achieved+ prop_followed_command_s |prolific_id) )
+summary(mod)
+
+
+mod_stress_control_total <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  StressQ_s ~ mu_vect_s + prop_followed_command_s + (prop_followed_command_s+ mu_vect_s  |prolific_id) )
+summary(mod_stress_control_total)
+
+
+mod_stress_control <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  StressQ_s ~ prop_followed_command_s + ControlQ_s +(prop_followed_command_s + ControlQ_s|prolific_id) )
+summary(mod_stress_control)
+
+mod_stress_control_att_o <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  StressQ_s ~ prop_followed_command_s + goal_achieved*AttribQ_s +ControlQ_s +(prop_followed_command_s + goal_achieved*AttribQ_s+ ControlQ_s|prolific_id) )
+summary(mod_stress_control_att_o)
+
+mod_stress_control_att <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  StressQ_s ~ prop_followed_command_s + AttribQ_s +ControlQ_s +(prop_followed_command_s + AttribQ_s+ ControlQ_s|prolific_id) )
+summary(mod_stress_control_att)
+
+# cQ on aQ?
+mod <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  AttribQ_s ~ ControlQ_s +( ControlQ_s|prolific_id) )
+summary(mod)
+
+# aQ on stress | cq # TRUE
+mod <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  StressQ_s ~ AttribQ_s +ControlQ_s +(AttribQ_s+ ControlQ_s|prolific_id) )
+summary(mod)
+
+# aQ*o on stress | cq FALSE
+mod <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  StressQ_s ~ goal_achieved_f*AttribQ_s +ControlQ_s +(goal_achieved_f*AttribQ_s+ ControlQ_s|prolific_id) )
+summary(mod)
+
+
+dag1 <- dagitty('dag {
+bb="0,0,1,1"
+aQ [pos="0.501,0.249"]
+cQ [pos="0.167,0.331"]
+control [exposure,pos="0.169,0.059"]
+o [pos="0.346,0.235"]
+sQ [outcome,pos="0.401,0.462"]
+aQ -> sQ
+cQ -> aQ
+cQ -> sQ
+control -> aQ
+control -> cQ
+control -> o
+o -> sQ
+}')
+plot(dag1)
+
+#testing implications
+# aQ ⊥ cQ | control ##### FALSE -- > line between cQ and aQ
+mod <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  AttribQ_s ~ prop_followed_command_s +ControlQ_s + (prop_followed_command_s +  ControlQ_s|prolific_id) )
+summary(mod)
+
+# aQ ⊥ cQ | control, good by chance ##### FALSE -- > line between cQ and aQ, line between control and aQ
+# trialdata$prop_good_move_by_chance_s %>% glimpse
+mod <- lmer(data = trialdata %>% filter(goalChosen01!=-1),  AttribQ_s ~ prop_followed_command_s + prop_good_move_by_chance_s +ControlQ_s + (prop_followed_command_s + prop_good_move_by_chance_s+  ControlQ_s|prolific_id) )
+summary(mod)
+
+# aQ ⊥ cQ | control, good by chance, o 
+# trialdata$prop_good_move_by_chance_s %>% glimpse
+mod <- lmer(data = trialdata %>% filter(goalChosen01!=-1),  AttribQ_s ~ prop_followed_command_s + prop_good_move_by_chance_s + ControlQ_s + goal_achieved_f+ (prop_followed_command_s + prop_good_move_by_chance_s+  ControlQ_s+ goal_achieved_f|prolific_id) )
+summary(mod)
+
+# control ⊥ cQ | control, good by chance, o 
+# trialdata$goal_achieved_f %>% glim
+mod <- lmer(data = trialdata %>% filter(goalChosen01!=-1),  ControlQ_s ~ prop_followed_command_s + prop_good_move_by_chance_s +  AttribQ_s+ (prop_followed_command_s + prop_good_move_by_chance_s+ AttribQ_s|prolific_id) )
+summary(mod)
+
+mod <- lmer(data = trialdata %>% filter(goalChosen01!=-1),  ControlQ_s ~ prop_followed_command_s + prop_good_move_by_chance_s +  (prop_followed_command_s + prop_good_move_by_chance_s|prolific_id) )
+summary(mod)
+
+
+# aQ ⊥ control | cQ, o,  ##### FALSE -- > line between control and aQ
+mod <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  AttribQ_s ~ prop_followed_command_s +ControlQ_s+  goal_achieved_f + (prop_followed_command_s + goal_achieved_f + ControlQ_s|prolific_id) )
+summary(mod)
+
+# o ⊥ control | cQ ##### TRUE
+mod <- glmer(data = movedata_trial %>% filter(goalChosen01!=-1),  goal_achieved_f ~ prop_followed_command_s +ControlQ_s+  (prop_followed_command_s +  ControlQ_s|prolific_id), family = "binomial")
+summary(mod)
+
+# o ⊥ cQ ##### FALSE
+mod <- glmer(data = movedata_trial %>% filter(goalChosen01!=-1),  goal_achieved_f ~ ControlQ_s+  (ControlQ_s|prolific_id), family = "binomial")
+summary(mod)
+
+# o ⊥ effort | cQ ##### 
+mod <- glmer(data = movedata_trial %>% filter(goalChosen01!=-1),  goal_achieved_f ~ ControlQ_s+  mean_log_rt_s %>% wo + (ControlQ_s+mean_log_rt_s %>% wo|prolific_id), family = "binomial")
+summary(mod)
+
+# aQ ⊥ o | control ##### TRUE
+mod <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  AttribQ_s ~ prop_followed_command_s +goal_achieved_f+  (prop_followed_command_s +  goal_achieved_f|prolific_id))
+summary(mod)
+
+# aQ ⊥ o  ##### false
+mod <- glmer(data = movedata_trial %>% filter(goalChosen01!=-1),  goal_achieved_f ~ AttribQ_s+  (AttribQ_s|prolific_id), family = "binomial")
+summary(mod)
+
+# aQ ⊥ o  | cQ  ##### TRUE
+mod <- glmer(data = movedata_trial %>% filter(goalChosen01!=-1),  goal_achieved_f ~ AttribQ_s+ ControlQ_s+ (AttribQ_s+ControlQ_s|prolific_id), family = "binomial")
+summary(mod)
+
+# introducing effort
+
+# aQ ⊥ control ### FALSE (ie no eff)
+mod <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  AttribQ_s ~ prop_followed_command_s + (prop_followed_command_s |prolific_id) )
+
+
+mod <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),   mean_log_rt_s %>% wo ~ session + (session |prolific_id) )
+
+summary(mod)
+
+# aQ ⊥ effort ### TRUE (ie no eff)
+
+mod  <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1), mean_log_rt_s %>% wo~ AttribQ_s + (AttribQ_s|prolific_id))
+
+summary(mod)
+
+# cQ ⊥ effort FALSE
+mod  <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  mean_log_rt_s %>% wo ~ ControlQ_s + (ControlQ_s|prolific_id))
+summary(mod)
+
+# control ⊥ effort # FALSE
+
+mod  <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  mean_log_rt_s %>% wo ~ prop_followed_command_s + (prop_followed_command_s|prolific_id))
+summary(mod)
+
+# control ⊥ effort  | ControlQ # TRUE
+
+mod  <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  mean_log_rt_s %>% wo ~ prop_followed_command_s +ControlQ_s+ (prop_followed_command_s+ControlQ_s|prolific_id))
+summary(mod)
+
+mod  <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  mean_log_rt_s %>% wo ~ prop_followed_command_s +(prop_followed_command_s+ControlQ_s|prolific_id))
+summary(mod)
+
+
+# stress ⊥ effort  | ControlQ # TRUE
+
+mod  <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  mean_log_rt_s %>% wo ~ prop_followed_command_s +ControlQ_s+ (prop_followed_command_s+ControlQ_s|prolific_id))
+summary(mod)
+
+# cQ ⊥ o | effort
+
+mod <- glmer(data = movedata_trial %>% filter(goalChosen01!=-1),  goal_achieved_f ~  ControlQ_s +  (ControlQ_s|prolific_id), family = "binomial")
+summary(mod)
+
+# How does this relate to success on the next trial? ####
+
+# is there an effect of control, StressQ or ControlQ, aQ on success in next trial?
+# cQ yes.
+mod <- glmer(data = movedata_trial %>% filter(goalChosen01!=-1),  lead(goal_achieved_f) ~  ControlQ_s +  (ControlQ_s|prolific_id), family = "binomial")
+summary(mod)
+# sQ no.
+mod <- glmer(data = movedata_trial %>% filter(goalChosen01!=-1),  lead(goal_achieved_f) ~  StressQ_s +  (StressQ_s|prolific_id), family = "binomial")
+summary(mod)
+# aQ yes.
+mod <- glmer(data = movedata_trial %>% filter(goalChosen01!=-1),  lead(goal_achieved_f) ~  AttribQ_s +  (AttribQ_s|prolific_id), family = "binomial")
+summary(mod)
+
+# o yes.
+mod <- glmer(data = movedata_trial %>% filter(goalChosen01!=-1),  lead(goal_achieved_f) ~  goal_achieved_f +  (goal_achieved_f|prolific_id), family = "binomial")
+summary(mod)
+
+# aQ*o no.
+
+mod <- glmer(data = movedata_trial %>% filter(goalChosen01!=-1),  lead(goal_achieved_f) ~  AttribQ_s*goal_achieved_f +  (AttribQ_s*goal_achieved_f|prolific_id), family = "binomial")
+
+summary(mod)
+
+# effort? yes.
+
+mod <- glmer(data = movedata_trial %>% filter(goalChosen01!=-1),  goal_achieved_f ~  mean_log_rt_s %>% wo +  (mean_log_rt_s %>% wo|prolific_id), family = "binomial")
+
+summary(mod)
+
+# control yes.
+mod <- glmer(data = movedata_trial %>% filter(goalChosen01!=-1),  lead(goal_achieved_f) ~  prop_followed_command_s+  (prop_followed_command_s|prolific_id), family = "binomial")
+
+summary(mod)
+
+mod <- glmer(data = movedata_trial %>% filter(goalChosen01!=-1),  lead(goal_achieved_f) ~  prop_followed_command_s+ lead(prop_followed_command_s)+ (prop_followed_command_s+ lead(prop_followed_command_s)|prolific_id), family = "binomial")
+
+summary(mod)
+
+# choice of goals? yes.
+mod <- glmer(data = movedata_trial %>% filter(goalChosen01!=-1),  goal_achieved_f ~  goalChosen01  +  (goalChosen01|prolific_id), family = "binomial")
+
+summary(mod)
+
+# testing dag implications ??
+
+
+
+# aQ ⊥ choice (t+1) ? ### TRUE  (ie no eff)
+
+mod  <- glmer(data = movedata_trial %>% filter(goalChosen01!=-1),  lead(goalChosen01) ~ AttribQ_s + (AttribQ_s|prolific_id), family = "binomial")
+summary(mod)
+
+# o ⊥ choice (t+1) ? ### TRUE  (ie no eff)
+
+mod  <- glmer(data = movedata_trial %>% filter(goalChosen01!=-1),  lead(goalChosen01) ~ goal_achieved_f + (goal_achieved_f|prolific_id), family = "binomial")
+summary(mod)
+
+mod  <- glmer(data = movedata_trial %>% filter(goalChosen01!=-1),  lead(goalChosen01) ~ goal_achieved_f*AttribQ_s + (goal_achieved_f*AttribQ_s|prolific_id), family = "binomial")
+summary(mod)
+
+#cQ ⊥ choice (t+1)  # TRUE 
+mod  <- glmer(data = movedata_trial %>% filter(goalChosen01!=-1),  lead(goalChosen01) ~ ControlQ_s+ (ControlQ_s|prolific_id), family = "binomial")
+summary(mod)
+# control ⊥ choice (t+1) # TRUE
+mod  <- glmer(data = movedata_trial %>% filter(goalChosen01!=-1),  lead(goalChosen01) ~ prop_followed_command_s+ (prop_followed_command_s|prolific_id), family = "binomial")
+summary(mod)
+
+# aQ ⊥ effort(t+1) ? ### TRUE (ie no eff)
+
+mod  <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1), lead(mean_log_rt_s %>% wo)~ AttribQ_s + (AttribQ_s|prolific_id))
+
+summary(mod)
+
+# cQ ⊥ effort(t+1) # maybe?
+mod  <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  lead(mean_log_rt_s %>% wo) ~ ControlQ_s + (ControlQ_s|prolific_id))
+summary(mod)
+
+# control ⊥ effort(t+1) # FALSE , but control ⊥ effort(t+1) | control(t+1)
+
+mod  <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  lead(mean_log_rt_s %>% wo) ~ prop_followed_command_s + (prop_followed_command_s|prolific_id))
+summary(mod)
+
+mod  <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  lead(mean_log_rt_s %>% wo) ~ prop_followed_command_s + lead(prop_followed_command_s) +  (prop_followed_command_s + lead(prop_followed_command_s)|prolific_id))
+summary(mod)
+
+# control ⊥ effort(t+1) | cQ # TRUE  
+mod  <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  lead(mean_log_rt_s %>% wo) ~ prop_followed_command_s +ControlQ_s+ (prop_followed_command_s+ControlQ_s|prolific_id))
+summary(mod)
+
+# control ⊥ effort(t+1) | cQ # TRUE  
+mod  <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1),  lead(mean_log_rt_s %>% wo) ~ prop_followed_command_s +ControlQ_s+ (prop_followed_command_s+ControlQ_s|prolific_id))
+summary(mod)
+
+
+
+
+g <- movedata_trial %>% filter(prolific_id %in% c(20: 41), session == 3) %>%  ggplot(aes(x = prop_followed_command_s, y = mean_log_rt %>% wo)) + geom_point() + theme_minimal() + geom_smooth(method='lm', formula= y~x) + facet_wrap(~prolific_id)
+
+dag2 <- dagitty('dag {
+bb="0,0,1,1"
+"choice (t+1)" [pos="0.510,0.675"]
+"control(t+1)" [pos="0.074,0.243"]
+"effort(t+1)" [pos="0.355,0.821"]
+"o(t+1)" [outcome,pos="0.058,0.715"]
+aQ [pos="0.695,0.256"]
+cQ [pos="0.192,0.322"]
+control [exposure,pos="0.360,0.071"]
+effort [pos="0.544,0.098"]
+o [pos="0.434,0.241"]
+sQ [outcome,pos="0.453,0.401"]
+"choice (t+1)" -> "o(t+1)"
+"control(t+1)" -> "o(t+1)"
+"effort(t+1)" -> "o(t+1)"
+aQ -> "o(t+1)" [pos="0.454,0.612"]
+aQ -> sQ
+cQ -> "o(t+1)"
+cQ -> aQ
+cQ -> sQ
+control -> "control(t+1)"
+control -> "effort(t+1)"
+control -> aQ
+control -> cQ
+control -> effort
+control -> o
+effort -> o
+o -> "o(t+1)"
+o -> aQ
+o -> sQ
+}
+')
+
+# does less effort lead to poorer outcome?
+# does less effort affect beliefs about control or beliefs about attribution?
+
+## DAG 2 #####
+dag {
+"attrib (t)" [pos="0.125,-1.661"]
+"control (t)" [exposure,pos="-0.705,-1.939"]
+"effort (t+1)" [outcome,pos="-0.208,-0.241"]
+"goal achieved (t)" [pos="-1.568,-1.580"]
+"stress (t)" [outcome,pos="-1.105,-0.250"]
+"attrib (t)" -> "effort (t+1)"
+"attrib (t)" -> "stress (t)"
+"control (t)" -> "attrib (t)"
+"control (t)" -> "goal achieved (t)"
+"goal achieved (t)" -> "attrib (t)"
+"goal achieved (t)" -> "effort (t+1)"
+"goal achieved (t)" -> "stress (t)"
+"stress (t)" -> "effort (t+1)"
+}
+
+# The model implies the following conditional independences:
+# 
+# effort (t+1) ⊥ control (t) | attrib (t), goal achieved (t)
+# stress (t) ⊥ control (t) | attrib (t), goal achieved (t)
+
+# testing dag implications
+
+# effort (t+1) ⊥ control (t) | attrib (t), goal achieved (t)
+mod_effort <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1), lead(mean_log_rt_sc) ~ prop_followed_command_s + goal_achieved_f*AttribQ_sc + (prop_followed_command_s + goal_achieved_f*AttribQ_sc|prolific_id))
+summary(mod_effort)
+
+
+# control belief has no effect on effort
+mod_effort2 <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1), lead(mean_log_rt_s) ~ ControlQ_s + (ControlQ_s|prolific_id))
+summary(mod_effort2)
+
+# attribution has an effect on effort
+mod_effort2 <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1), lead(mean_log_rt_s) ~ ControlQ_s + goal_achieved_f*AttribQ_s + (goal_achieved_f+AttribQ_s + ControlQ_s|prolific_id))
+summary(mod_effort2)
+
+
+# does more stress lead to lower effort on the next trial? (t.i. higher rt)
+summary(mod_goal)
+mod_goal <- lmer(data = movedata_trial %>% filter(goalChosen01!=-1), lead(mean_log_rt_s) ~ StressQ_s  + prop_followed_command_s + (StressQ_s+ prop_followed_command_s|prolific_id) )
+summary(mod_goal)
+
+# does attribution style lead to lower effort on the next trial? (t.i. higher rt)
+movedata_trial_reduced <- movedata_trial %>% filter(StressQ != 100,StressQ != 0,ControlQ != 100,ControlQ != 0,AttribQ != 100,AttribQ != 0 ) 
+mod_goal <- lmer(data = movedata_trial_reduced %>% filter(goalChosen01!=-1), lead(mean_log_rt_s%>% wo) ~ prop_followed_command_s + (StressQ_s|prolific_id) )
+summary(mod_goal)
+
+
+
+g <- movedata_trial %>% filter(prolific_id %in% c(20: 41)) %>%  ggplot(aes(x = StressQ, y = mean_log_rt %>% wo)) + geom_point() + theme_minimal() + geom_smooth(method='lm', formula= y~x) + facet_wrap(~prolific_id)
+
+```
+
+Model Stuff  / ingore for now
+
+```{r plot stress, fig.height= 6, fig.width=10}
+
+
+# how well did the model do predicting the control question?
+movedata %>% filter(prolific_id < 40, session == 1 ) %>% ggplot(aes(x= y_pred, y = ControlQ_t)) + geom_point() + geom_smooth(method = "lm") + facet_wrap(~prolific_id) +geom_line(aes(x= ControlQ_t, y = ControlQ_t), alpha = 0.5) + theme_Publication()
+
+
+
+# movedata %>% glimpse()
+movedata_group = movedata %>% 
+  group_by(prolific_id, session) %>% 
+  summarize(pi_control_win_par = pi_control_win_par[1],
+            om_control_win_par = om_control_win_par[1],
+            pi_control_loss_par = pi_control_loss_par[1],
+            om_control_loss_par = om_control_loss_par[1],
+            om_control_par = (om_control_win_par[1] + om_control_loss_par[1])/2,
+            pi_control_par = (pi_control_win_par[1] + pi_control_loss_par[1])/2,
+            nu_tr_par = nu_tr_par[1],
+            loss_bias_tr_par = loss_bias_tr_par[1],
+            pi_control_win_par_refit = pi_control_win_par_refit[1],
+            om_control_win_par_refit = om_control_win_par_refit[1],
+            pi_control_loss_par_refit = pi_control_loss_par_refit[1],
+            om_control_loss_par_refit = om_control_loss_par_refit[1],
+            nu_tr_par_refit = nu_tr_par_refit[1],
+            loss_bias_tr_par_refit = loss_bias_tr_par_refit[1],Internality_s = Internality_s[1], 
+            Chance_s = Chance_s[1],
+            PowerfulOthers_s= PowerfulOthers_s[1],
+            psc_total_s= psc_total_s[1],
+            Bis_total_s= Bis_total_s[1],
+            Bis_Self_Control_s = Bis_Self_Control_s[1],
+            BAS_drive_s= BAS_drive_s[1],
+            BAS_funseeking_s= BAS_funseeking_s[1],
+            BAS_rewardresponsivness_s= BAS_rewardresponsivness_s[1],
+            BIS_s= BIS_s[1],
+            cti_total_s = cti_total_s[1],
+            Attachment_Anxiety_s= Attachment_Anxiety_s[1],
+            Attachment_Avoidance_s = Attachment_Avoidance_s[1]
+  ) %>% ungroup
+
+data_om_control_trt <- movedata_group %>% filter(session !=4) %>% select(prolific_id, om_control_par, session) %>% spread(session, om_control_par) 
+
+ data_om_control_trt <- data_om_control_trt[rowSums(is.na(data_om_control_trt[,2:4])) == 0,] %>% select(!prolific_id) 
+colnames(data_om_control_trt) = c("session1", "session2", "session3")
+
+data_om_control_trt %>% ggplot(aes(x = session1, y = session2)) + geom_point() + geom_smooth(method= "lm")
+ icc_score = data_om_control_trt %>% ICC(lmer=FALSE)  
+icc_score
+
+data_pi_control_trt <- movedata_group %>% filter(session !=4) %>% select(prolific_id, pi_control_par, session) %>% spread(session, pi_control_par) 
+
+ data_pi_control_trt <- data_pi_control_trt[rowSums(is.na(data_pi_control_trt[,2:4])) == 0,] %>% select(!prolific_id) 
+colnames(data_pi_control_trt) = c("session1", "session2", "session3")
+
+data_pi_control_trt %>% ggplot(aes(x = session3, y = session2)) + geom_point() + geom_smooth(method= "lm")
+ icc_score = data_pi_control_trt %>% ICC(lmer=FALSE)  
+icc_score
+
+
+data_om_control_loss_trt <- movedata_group %>% filter(session !=4) %>% select(prolific_id, om_control_loss_par, session) %>% spread(session, om_control_loss_par) 
+
+ data_om_control_loss_trt <- data_om_control_loss_trt[rowSums(is.na(data_om_control_loss_trt[,2:4])) == 0,] %>% select(!prolific_id) 
+colnames(data_om_control_loss_trt) = c("session1", "session2", "session3")
+
+data_om_control_loss_trt %>% ggplot(aes(x = session1, y = session2)) + geom_point() + geom_smooth(method= "lm")
+ icc_score = data_om_control_loss_trt %>% ICC(lmer=FALSE)  
+icc_score
+#
+data_om_control_win_trt <- movedata_group %>% filter(session !=4) %>% select(prolific_id, om_control_win_par, session) %>% spread(session, om_control_win_par) 
+
+ data_om_control_win_trt <- data_om_control_win_trt[rowSums(is.na(data_om_control_win_trt[,2:4])) == 0,] %>% select(!prolific_id) 
+colnames(data_om_control_win_trt) = c("session1", "session2", "session3")
+
+data_om_control_win_trt %>% ggplot(aes(x = session1, y = session2)) + geom_point() + geom_smooth(method= "lm")
+ icc_score = data_om_control_win_trt %>% ICC(lmer=FALSE)  
+icc_score
+#
+
+
+ #loss
+data_pi_loss_trt <- movedata_group %>% filter(session != 4, pi_control_loss_par >-2) %>% select(prolific_id, pi_control_loss_par, session) %>% spread(session, pi_control_loss_par) 
+
+ data_pi_loss_trt <- data_pi_loss_trt[rowSums(is.na(data_pi_loss_trt[,2:4])) == 0,] %>% select(!prolific_id) 
+colnames(data_pi_loss_trt) = c("session1", "session2", "session3")
+
+data_pi_loss_trt %>% ggplot(aes(x = session2, y = session3)) + geom_point() + geom_smooth(method= "lm")
+ icc_score = data_pi_loss_trt %>% ICC(lmer=FALSE)   
+ icc_score
+ # win
+ data_pi_win_trt <- movedata_group %>% filter(session != 4) %>% select(prolific_id, pi_control_win_par, session) %>% spread(session, pi_control_win_par) 
+
+ data_pi_win_trt <- data_pi_win_trt[rowSums(is.na(data_pi_win_trt[,2:4])) == 0,] %>% select(!prolific_id) 
+colnames(data_pi_win_trt) = c("session1", "session2", "session3")
+
+data_pi_win_trt %>% ggplot(aes(x = session1, y = session2)) + geom_point() + geom_smooth(method= "lm")
+ icc_score = data_pi_win_trt %>% ICC(lmer=FALSE)   
+ icc_score
+ 
+
+data_nu_par_trt <- movedata_group %>% filter(session != 4) %>% select(prolific_id, nu_tr_par, session) %>% spread(session, nu_tr_par) 
+
+ data_nu_par_trt <- data_nu_par_trt[rowSums(is.na(data_nu_par_trt[,2:4])) == 0,] %>% select(!prolific_id) 
+colnames(data_nu_par_trt) = c("session1", "session2", "session3")
+
+data_nu_par_trt %>% ggplot(aes(x = session1, y = session2)) + geom_point() + geom_smooth(method= "lm")
+ icc_score = data_nu_par_trt %>% ICC(lmer=FALSE)   
+ icc_score
+ 
+data_loss_bias_par_trt <- movedata_group %>% filter(session != 4) %>% select(prolific_id, loss_bias_tr_par, session) %>% spread(session, loss_bias_tr_par) 
+
+data_loss_bias_par_trt <- data_loss_bias_par_trt[rowSums(is.na(data_loss_bias_par_trt[,2:4])) == 0,] %>% select(!prolific_id) 
+colnames(data_loss_bias_par_trt) = c("session1", "session2", "session3")
+
+data_loss_bias_par_trt %>% ggplot(aes(x = session1, y = session3)) + geom_point() + geom_smooth(method= "lm")
+ icc_score = data_loss_bias_par_trt %>% ICC(lmer=FALSE)   
+ icc_score
+# trt icc (if all four sessions used look at average, if individual test is important look at single)
+# icc(3,k) = mixed effects model, using ICC = between subj var / (between subj var + error)
+ 
+ 
+```
+ 
+# parameter retrieval
+```{r how do models  pars do?}
+
+plot_grid(
+  movedata_group %>% ggplot(aes(x = om_control_win_par, y = om_control_win_par_refit)) + geom_point() + geom_smooth(method= "lm") +
+            xlab(expression("\U1D714"["win"]))+ylab(expression(paste("\U1D714"["win"], " refitted"))) + theme_Publication(base_size = 15),
+   movedata_group %>% ggplot(aes(x = pi_control_win_par, y = pi_control_win_par_refit)) + geom_point() + geom_smooth(method= "lm") +
+            xlab(expression("\U1D70B"["win"]))+ylab(expression(paste("\U1D70B"["win"], " refitted"))) + theme_Publication(base_size = 15),
+   movedata_group %>% ggplot(aes(x = om_control_loss_par, y = om_control_loss_par_refit)) + geom_point() + geom_smooth(method= "lm") +
+            xlab(expression("\U1D714"["loss"]))+ylab(expression(paste("\U1D714"["loss"], " refitted"))) + theme_Publication(base_size = 15),
+   movedata_group %>% ggplot(aes(x = pi_control_loss_par, y = pi_control_loss_par_refit)) + geom_point() + geom_smooth(method= "lm") +
+            xlab(expression("\U1D70B"["loss"]))+ylab(expression(paste("\U1D70B"["loss"], " refitted"))) + theme_Publication(base_size = 15),
+   movedata_group %>% ggplot(aes(x = nu_tr_par, y = nu_tr_par_refit)) + geom_point() + geom_smooth(method= "lm") +
+            xlab("noise")+ylab("noise refitted") + theme_Publication(base_size = 15),
+   movedata_group %>% ggplot(aes(x = loss_bias_tr_par, y = loss_bias_tr_par_refit)) + geom_point() + geom_smooth(method= "lm") +
+            xlab("Loss Bias")+ylab("Loss Bias refitted") + theme_Publication(base_size = 15),
+  ncol = 2)
+  
+ cor.test(movedata_group$pi_control_win_par, movedata_group$pi_control_win_par_refit)
+ 
+
+ 
+
+ 
+```
+ 
+
+
+```{r how do model pars relate to q#s}
+## cca
+require(CCA)
+require(CCP)
+require(GGally)
+require(ggdist)
+data_pars = movedata_group %>% filter(session == 1, !is.na(pi_control_win_par)) %>% dplyr::select(pi_control_win_par: loss_bias_tr_par  )
+  data_q = movedata_group %>% filter(session == 1, !is.na(pi_control_win_par)) %>% dplyr::select(Internality_s: Attachment_Avoidance_s  ) 
+ccor_mat = cc( data_pars, data_q )
+                                                
+# plt.cc(ccor_mat, var.label = TRUE, ind.names = data_pars[,1])
+
+ccor_mat$cor
+ccor_mat %>% glimpse
+
+cc2 <- comput(data_pars, data_q, ccor_mat)
+
+# cc2 %>% glimpse
+
+
+# tests of canonical dimensions
+rho <- ccor_mat$cor
+## Define number of observations, number of variables in first set, and number of variables in the second set.
+n <- dim(data_pars)[1]
+p <- length(data_pars)
+q <- length(data_q)
+
+## Calculate p-values using the F-approximations of different test statistics:
+p.asym(rho, n, p, q, tstat = "Wilks")
+ p.asym(rho, n, p, q, tstat = "Roy")
+ 
+s1 <- diag(sqrt(diag(cov(data_pars))))
+s1 %*% ccor_mat$xcoef
+
+s2 <- diag(sqrt(diag(cov(data_q))))
+s2 %*% ccor_mat$ycoef
+
+
+movedata_group
+
+
+
+
+
+movedata_group = movedata_group %>% merge(trialdata %>% group_by(prolific_id) %>% summarize(psc_total = psc_total[1],
+                                                Internality = Internality[1],
+                                                Chance = Chance[1],
+                                                PowerfulOthers = PowerfulOthers[1]) %>% ungroup, by = "prolific_id")
+
+movedata_group_ses1 = movedata_group %>% filter(session== 1)
+
+movedata_group_ses1
+# ggpairs(movedata_group_ses1 %>% dplyr::select(pi_control_win_par: loss_bias_tr_par,  Internality_s: Attachment_Avoidance_s ))
+matcor(movedata_group_ses1 %>% dplyr::select(pi_control_win_par: loss_bias_tr_par),movedata_group_ses1 %>% dplyr::select(Internality_s: Attachment_Avoidance_s ))
+# plot(data_pars$pi_control_win_par, data_q$Chance_s)
+
+cor.test(data_pars$pi_control_win_par, data_q$Bis_total_s)
+cor.test(data_pars$pi_control_loss_par, data_q$PowerfulOthers_s)
+
+cor.test(data_pars$pi_control_loss_par, data_q$psc_total_s)
+
+
+plot(movedata_group$psc_total, movedata_group$om_control_par)
+cor.test(movedata_group$psc_total, movedata_group$om_control_par)
+
+
+
+
+```
+
+
+
+FA and network analysis 
+```{r}
+# FA analysis of questionnaire data:
+library(psych)
+library(corrplot)
+
+# correlation matrix:
+cor_mat <- trialdata_pbyp %>% filter(prolific_id == 20) %>% mutate(gaXattrib = goal_achieved*AttribQ_s,
+                                     mean_log_rt_s_next_t = lead(mean_log_rt_s)) %>%  select( mean_log_rt_s_next_t, StressQ_s, prop_followed_command_s, goal_achieved, AttribQ_s, gaXattrib ) %>% cor(use = "pairwise.complete.obs") 
+
+
+cor_mat %>% ggcorrplot()
+
+
+cor_mat <- trialdata_pbyp %>% mutate(gaXattrib = goal_achieved*AttribQ_s,
+                                     mean_log_rt_s_next_t = lead(mean_log_rt_s)) %>%  select( mean_log_rt_s_next_t, StressQ_s, prop_followed_command_s, goal_achieved, AttribQ_s,gaXattrib ) %>% cor(use = "pairwise.complete.obs") 
+
+
+#
+# 
+# Kaiser-Meyer-Olkin (KMO) Measure of Sampling Adequacy is a test conducted to examine the strength of the partial correlation (how the factors explain each other) between the variables. KMO values closer to 1.0 are consider ideal while values less than 0.5 are unacceptable. Recently,most scholars argue that a KMO of at least 0.80 are good enough for factor analysis to commence. Below is a tabular chart for your perusal.
+# KMO on normalized data 
+fa_mat <- trialdata_pbyp  %>% mutate(mean_log_rt_s_next_t = lead(mean_log_rt_s)) %>%  select(StressQ_s, ControlQ_s, AttribQ_s) %>% na.exclude() # add 
+KMO(r = cor(fa_mat, use = "pairwise.complete.obs"))
+
+# KMO on within subject normalized data 
+fa_mat_sc <- trialdata_pbyp %>% mutate(mean_log_rt_s_next_t = lead(mean_log_rt_s)) %>%  select(StressQ_sc, ControlQ_sc, AttribQ_sc) %>% na.exclude()# add 
+KMO(r = cor(fa_mat_sc, use = "pairwise.complete.obs"))
+
+cortest.bartlett(fa_mat) # Bartlett's test of Sphericity is used to test the null hypothesis that the correlation matrix is an identity matrix
+cortest.bartlett(fa_mat_sc)
+
+corrplot(cor(fa_mat), method="number")
+corrplot(cor(fa_mat_sc), method="number")
+# pos def matrix:
+det(cor(fa_mat, use = "pairwise.complete.obs"))
+
+# 
+fafitfree <- fa(fa_mat,nfactors = ncol(fa_mat)-1, rotate = "none")
+n_factors <- length(fafitfree$e.values)
+scree     <- data.frame(
+  Factor_n =  as.factor(1:n_factors), 
+  Eigenvalue = fafitfree$e.values)
+ggplot(scree, aes(x = Factor_n, y = Eigenvalue, group = 1)) + 
+  geom_point() + geom_line() +
+  xlab("Number of factors") +
+  ylab("Initial eigenvalue") +
+  labs( title = "Scree Plot", 
+        subtitle = "(Based on the unreduced correlation matrix)")
+library("nFactors ")
+
+parallel <- fa.parallel(fa_mat_sc)
+
+
+fa.none <- fa(r=fa_mat, 
+ nfactors = 1, 
+ # covar = FALSE, SMC = TRUE,
+ fm="pa", # type of factor analysis we want to use (“pa” is principal axis factoring)
+ max.iter=100, # (50 is the default, but we have changed it to 100
+ rotate="varimax") # none rotation
+print(fa.none)
+
+factanal.none <- factanal(fa_mat, factors=1, scores = c("regression"), rotation = "varimax")
+print(factanal.none)
+
+fa.diagram(fa.none)
+
+
+head(fa.none$scores)
+
+# regression, choose Y and matrix X
+
+regdata <- cbind(fa_mat[""], fa.none$scores)
+#Labeling the data
+names(regdata) <- c("QD", "F1", "F2",
+ "F3", "F4")
+head(regdata)
+
+
+#Splitting the data 70:30
+#Random number generator, set seed.
+set.seed(100)
+indices= sample(1:nrow(regdata), 0.7*nrow(regdata))
+train=regdata[indices,]
+test = regdata[-indices,]
+
+
+model.fa.score = lm(Satisfaction~., train)
+summary(model.fa.score)
+
+vif(model.fa.score)
+
+#Model Performance metrics:
+pred_test <- predict(model.fa.score, newdata = test, type = "response")
+pred_test
+test$QD_Predicted <- pred_test
+head(test[c("QD","QD_Predicted")], 10)
+
+```
+
+```{r}
+# nework analysis of questionnaire data:
+
+# trialdata_pbyp
+library("psychonetrics")
+data
+
+
+```
+
+# plots 
+
+Vigour (i.e. rt's) within trials. 
+The script takes 2 mins per subject (all 4 sessions).
+
+```{r}
+
+knitr::opts_knit$set(root.dir = dirname(rstudioapi::getActiveDocumentContext()$path))
+
+# - - - - - - Build "micro_responses.df" - - - - - - 
+
+micro_responses.df = data.frame(matrix(nrow = 100000, ncol = 20));
+colnames(micro_responses.df) = c("prolific_id", "session", "trial", "ctl_level", "pot_gain", "pot_loss", "move", "sel_dir", "red_light_duration", "rt","true_dir", "time_rem", "distance_rem","current_distance","current_time","good_direction", "error_happened","error_on_previous_move",'timerem_lastpress', "last_move");
+
+# list response data files to iterate on.
+response_files = dir("../../Data/raw", pattern = "_responseData.csv")
+#response_files = response_files[1:4];
+line_num = 1;
+
+for (f in response_files){
+  
+  print(paste("file:", f)); 
+  start_time = Sys.time();
+  
+  # extract general information directly from file name.
+  tmp = sub('_responseData.csv',"",f)
+  the_subject = as.numeric(gsub("_sess\\d","",tmp));
+  the_session = as.numeric(sub("[0-9]{,2}_sess","",tmp));
+  rm(tmp)
+  
+  # import response file, headers removed. 
+  response_file = readLines(paste('../../Data/raw/', f, sep = ""))[-(1:2)]
+  
+  # import corresponding trial file, also with headers removed.
+  corresp_trial_file = dir("../../Data/raw", pattern = paste(the_subject,"_sess",the_session,".*","trialData.csv", sep = ""))
+  corresp_trial_file = readLines(paste('../../Data/raw/',corresp_trial_file, sep = ""))[-(1:2)]
+  
+  for (trial in 1:length(response_file)){
+    
+    #print(paste("...trial:", trial));
+    
+    # tokenise whole trial responses.
+    tokenised_responses = as.numeric(strsplit(response_file[trial], ",")[[1]]);
+    
+    # tokenise trial data.
+    tokenised_trialdata = as.numeric(strsplit(corresp_trial_file[trial], ",")[[1]]);
+    
+    # get rid of trial number and count moves.
+    tokenised_responses = tokenised_responses[-1];
+    move_count = length(tokenised_responses)/5;
+    
+    # reset self-adding variables.
+    time_allowance_used = 0;
+    time_from_start = 0;
+    local_error_found = FALSE;
+    error_found_in_trial = FALSE;
+    
+    goal_selected = tokenised_trialdata[10];
+    dist_goal1 = round((tokenised_trialdata[7]/sqrt(2) + 35 - 30)/60)*2;
+    dist_goal2 = round((tokenised_trialdata[8]/sqrt(2) + 35 - 30)/60)*2;
+    initial_distance = if (goal_selected == 1) dist_goal1 else dist_goal2;
+    
+    canvas_rotation = tokenised_trialdata[9];
+    good_directions = switch(canvas_rotation,
+                             if(goal_selected == 1) c(4,1) else c(2,3),
+                             if(goal_selected == 1) c(2,1) else c(4,3),
+                             if(goal_selected == 1) c(2,3) else c(4,1),
+                             if(goal_selected == 1) c(4,3) else c(2,1)
+    )
+    bad_directions = switch(canvas_rotation,
+                            if(goal_selected == 1) c(2,3) else c(4,1),
+                            if(goal_selected == 1) c(4,3) else c(2,1),
+                            if(goal_selected == 1) c(4,1) else c(2,3),
+                            if(goal_selected == 1) c(2,1) else c(4,3)
+    )     
+    
+    coords = c(initial_distance/2, initial_distance/2);
+    
+    for (move in 1:move_count){
+      
+      micro_responses.df[line_num,]$prolific_id = the_subject;
+      micro_responses.df[line_num,]$session = the_session;
+      micro_responses.df[line_num,]$trial = trial;
+      micro_responses.df[line_num,]$last_move = FALSE;
+       
+      if(length(tokenised_responses) > 0){
+        
+        micro_responses.df[line_num,]$ctl_level = tokenised_trialdata[2]
+        micro_responses.df[line_num,]$pot_gain = if(tokenised_trialdata[10] == 1) tokenised_trialdata[3] else tokenised_trialdata[5];
+        micro_responses.df[line_num,]$pot_loss = if(tokenised_trialdata[10] == 1) tokenised_trialdata[4] else tokenised_trialdata[6];
+        
+        # the base index for each individual move
+        base_index = 5*(move - 1);
+        
+        micro_responses.df[line_num,]$move = move;
+        micro_responses.df[line_num,]$sel_dir = tokenised_responses[base_index + 1];
+        
+        # good quantities to use.
+        presstime = tokenised_responses[base_index + 2];
+        time_spent_prev = if (move > 1) tokenised_responses[base_index - 1] else 0;
+        time_spent_curr = tokenised_responses[base_index + 4];
+        
+        micro_responses.df[line_num,]$timerem_lastpress = tokenised_trialdata[13];
+
+        local_error_found = (abs((time_spent_curr - (presstime + time_spent_prev)))) > 10;
+        error_found_in_trial = error_found_in_trial || local_error_found;
+        
+        micro_responses.df[line_num,]$error_on_previous_move = local_error_found;      
+        micro_responses.df[line_num,]$error_happened = error_found_in_trial;
+        
+        micro_responses.df[line_num,]$red_light_duration = if(move == 1) 0 else tokenised_responses[base_index - 2];
+        micro_responses.df[line_num,]$rt =  if(local_error_found) NA else presstime - micro_responses.df[line_num,]$red_light_duration - 10;
+        time_allowance_used = if(local_error_found) NA else time_allowance_used + micro_responses.df[line_num,]$rt;
+        micro_responses.df[line_num,]$true_dir = tokenised_responses[base_index + 5];
+        micro_responses.df[line_num,]$time_rem = if(local_error_found) NA else 6000 - time_allowance_used;
+        
+        progress = if(micro_responses.df[line_num,]$true_dir %in% good_directions) -1 else +1;
+        
+        micro_responses.df[line_num,]$good_direction = progress;
+        micro_responses.df[line_num,]$current_distance = sum(coords);
+        micro_responses.df[line_num,]$current_time = micro_responses.df[line_num,]$time_rem + micro_responses.df[line_num,]$rt;
+        
+        coords[1] = coords[1] - (micro_responses.df[line_num,]$true_dir == good_directions[1]) + (micro_responses.df[line_num,]$true_dir == bad_directions[1]);
+        coords[2] = coords[2] - (micro_responses.df[line_num,]$true_dir == good_directions[2]) + (micro_responses.df[line_num,]$true_dir == bad_directions[2]);
+        
+        coords[1] = max(min(coords[1],13),0);
+        coords[2] = max(min(coords[2],13),0);
+        
+        micro_responses.df[line_num,]$distance_rem = sum(coords);
+        
+      }
+      line_num = line_num + 1;
+    }
+    
+    last_move = TRUE;
+    ln = line_num - 1;
+    micro_responses.df[ln,]$last_move = TRUE;
+
+    if(error_found_in_trial){
+      while(is.na(micro_responses.df[ln,]$time_rem)){
+        if(last_move){ # last move of trial
+          micro_responses.df[ln,]$time_rem = 1000*micro_responses.df[ln,]$timerem_lastpress;
+          last_move = FALSE;
+        }
+        else{
+          micro_responses.df[ln,]$time_rem = micro_responses.df[ln+1,]$time_rem + micro_responses.df[ln+1,]$rt;
+        }
+        ln = ln - 1;
+      }
+      micro_responses.df[ln+1,]$rt = micro_responses.df[ln,]$time_rem - micro_responses.df[ln+1,]$time_rem - 800;
+    }
+  }
+    
+  print(paste("...time spent:", (Sys.time() - start_time))); 
+}
+
+micro_responses.df = micro_responses.df[!apply(micro_responses.df, 1, function(x){all(is.na(x))}),]
+pbyp_dataset = micro_responses.df;
+
+```
+
+Preliminary vigour analyses.
+
+```{r}
+
+# pre-process. (i) clear trials with a negative RT. (ii) z-score vigour.
+
+pbyp_dataset = read.csv("/home/mikusn22/mnt/p/userdata/mikusn22/data/LOC_Amisul_naltrexone_2019_2020/Control Task/control-task2/Data/pbyp_dataset_v1.csv") # read.csv("/Users/Fede/Desktop/Research/__projects/ctl-task-2.0/Data/pbyp_dataset_v1.csv")
+pbyp_dataset$rt[pbyp_dataset$rt < 200] <- NA
+pbyp_dataset$log_rt = log10(pbyp_dataset$rt);
+pbyp_dataset$log_rt_zscored = 0;
+pbyp_dataset$rt_zscored = 0;
+pbyp_dataset$sub_index = NA;
+
+pbyp_dataset$followed_command = (pbyp_dataset$sel_dir == pbyp_dataset$true_dir)
+pbyp_dataset$good_move = c(NA, diff(pbyp_dataset$distance_rem)<0)
+pbyp_dataset$good_move[pbyp_dataset$move == 1] = NA
+pbyp_dataset$good_move_by_chance = (pbyp_dataset$good_move == 1 & pbyp_dataset$followed_command)
+pbyp_dataset$distance_rem_t = (pbyp_dataset$distance_rem/max(pbyp_dataset$distance_rem, na.rm = T) + 0.1 ) %>% log()
+# lm analysis
+pbyp_effort_model <- lmer(data = pbyp_dataset, log_rt ~ lag(followed_command) * distance_rem_t  + (lag(followed_command)+distance_rem_t |prolific_id))
+pbyp_effort_model %>% summary
+
+sub_no = 100 # which subjects to plot? (index/per/session 1: 54) >54 to useall
+session_no = 1 # which session?
+
+pbyp_dataset = subset(pbyp_dataset, session == session_no);
+  if (is.na(sub_no)) {
+    sub_no = length(unique(pbyp_dataset$prolific_id))
+  }
+  # log_rt_zscored
+  for (ss in 1:length(unique(pbyp_dataset$prolific_id))) {
+    sub = unique(pbyp_dataset$prolific_id)[ss]
+    pbyp_dataset[pbyp_dataset$prolific_id == sub ,]$sub_index= ss
+    
+    sub_data = as.logical(pbyp_dataset$prolific_id == sub & !pbyp_dataset$error_happened & !is.na(pbyp_dataset$error_happened)); # @Fede double check: you had this: as.logical(pbyp_dataset$prolific_id == sub && !pbyp_dataset$error_happened);
+    pbyp_dataset[sub_data,]$log_rt_zscored =
+      (pbyp_dataset[sub_data,]$log_rt - mean(pbyp_dataset[sub_data,]$log_rt, na.rm = T))/sd(pbyp_dataset[sub_data,]$log_rt, na.rm = T);
+    pbyp_dataset[sub_data,]$rt_zscored =
+      (pbyp_dataset[sub_data,]$rt - mean(pbyp_dataset[sub_data,]$rt, na.rm = T))/sd(pbyp_dataset[sub_data,]$rt, na.rm = T);
+    
+  }
+  
+  pbyp_dataset$reasonable_rt = (between(pbyp_dataset$log_rt_zscored,-4,4));
+  
+  pbyp_dataset = subset(pbyp_dataset, sub_index <= sub_no);
+
+
+
+# initial distance problematic atm: must infer from whether initial move was good
+# pbyp_dataset$initial_distance = NA
+# for (sub in unique(pbyp_dataset$prolific_id)){
+#   for (sesh in 1:4){
+#     for (trial in 1:30){
+#       the_lines = pbyp_dataset$prolific_id == sub & pbyp_dataset$session == sesh & pbyp_dataset$trial == trial;
+#       if(sum(the_lines, na.rm = T) > 0){
+#         pbyp_dataset[the_lines,]$initial_distance = pbyp_dataset[the_lines & pbyp_dataset$move == 1,]$current_distance;
+#       }
+#     }
+#   }
+# }
+# pbyp_dataset[is.infinite(pbyp_dataset$initial_distance),]$initial_distance = NA;
+
+# 
+n_fun <- function(x){
+  return(data.frame(y = mean(x)))
+}
+
+# ~~~~ some plots
+pbyp_dataset_temp <- pbyp_dataset %>% filter(reasonable_rt, session == session_no, sub_index <= sub_no)
+
+# vigour ~ time, across distances and sessions.
+ggplot(pbyp_dataset_temp, aes(floor(current_time/200), log_rt_zscored)) + stat_smooth() + facet_wrap(~floor(current_distance/8)) + ylim(c(-1,1))
+
+# vigour ~ sessions. Do they try harder across sessions? --> think not.
+ggplot(subset(pbyp_dataset, reasonable_rt & time_rem > 0 & time_rem < 5500) , aes(session, log_rt_zscored)) + facet_wrap(~prolific_id) + stat_summary() + ylim(c(-1,1))
+
+# (!) Is there an effect of wrong direction on subsequent vigour? --> not really. really?
+ggplot(subset(pbyp_dataset, reasonable_rt & time_rem > 0 & time_rem < 5500) , aes(floor(time_rem/300), log_rt_zscored)) + stat_summary() + ylim(c(-1,1)) + facet_wrap(~good_move)  
+  #facet_wrap(~baddirection)  
+
+ggplot(subset(pbyp_dataset, reasonable_rt & distance_rem > 0 & last_move) , aes(time_rem, distance_rem)) + stat_smooth()
+
+# 
+ggplot(subset(pbyp_dataset, reasonable_rt) , aes(floor(time_rem/100), floor(distance_rem), z = log_rt_zscored)) + geom_tile(binwidth = 2, stat = "summary_2d", fun = mean, na.rm = T, alpha = 0.9) + scale_fill_continuous(limits=c(-0.8, 0.8))
+
+
+# binned vigour.
+
+distance.vals = seq(1,18,3);
+time.vals = seq(250,5750,250);
+#ctl.vals = seq(0.55,0.99,0.44);
+
+summary.df = data.frame(matrix(NA,nrow=length(distance.vals)*length(time.vals),ncol=6));
+names(summary.df) = c("dist_bin", "time_bin","mean_rt","sd_rt","count");
+
+c = 1;
+for (d in seq(length(distance.vals)-1)){
+  for (t in seq(length(time.vals)-1)){
+    temp = subset(pbyp_dataset, reasonable_rt &
+                    current_distance >= distance.vals[d] & current_distance <= distance.vals[d+1] &
+                    current_time >= time.vals[t] & current_time <= time.vals[t+1]); #&
+    #ctl_level >= ctl.vals[k] & ctl_level <= ctl.vals[k+1]);
+    summary.df[c,]$dist_bin = d;
+    summary.df[c,]$time_bin = t;
+    # summary.df[c,]$ctl_bin = k;
+    summary.df[c,]$mean_rt = mean(temp$log_rt_zscored);
+    summary.df[c,]$sd_rt = sd(temp$log_rt_zscored);
+    summary.df[c,]$count = nrow(temp);
+    
+    c = c+1;
+  }
+}
+
+ggplot(subset(summary.df, !is.na(mean_rt)) , aes(x = time_bin, y = mean_rt)) + geom_point(aes(alpha = log(count))) + facet_wrap(~dist_bin) + theme_bw() + scale_x_continuous(breaks = seq(1, length(time.vals), by = 1)) + xlab("time (bins)") + ylab("Mean z-scored log_RTs") + ylim(-1,1)
+
+ggplot(subset(summary.df, !is.na(mean_rt)) , aes(x = dist_bin, y = mean_rt)) + stat_summary() + facet_wrap(~floor(ctl_bin/2)) + theme_bw() + scale_x_continuous(breaks = seq(1, length(time.vals), by = 1)) + xlab("time (bins)") + ylab("Mean z-scored log_RTs") + ylim(-1,1)
+
+ggplot(subset(summary.df, !is.na(mean_rt)) , aes(x = time_bin, y = mean_rt)) + stat_summary() + theme_bw() + scale_x_continuous(breaks = seq(1, length(time.vals), by = 1)) + xlab("time (bins)") + ylab("Mean z-scored log_RTs") +ylim(-1,1)
+
+splitcome = -1*(pbyp_dataset$pot_outcome == -8) + 1*(pbyp_dataset$pot_outcome == 1);
+ggplot(subset(pbyp_dataset, reasonable_rt), aes(x = abs(pot_outcome), y = log_rt_zscored)) + stat_summary()
+```
+
+Fitting optimal vigour.
+
+```{r}
+
+library(rstan)
+
+get_trial_type <- function(z){
+  if(z[1] == 1 & z[2] == 0){
+    return(1);
+  }
+  if(z[1] == 2 & z[2] == 0){
+    return(2);
+  }
+  if(z[1] == 4 & z[2] == 0){
+    return(3);
+  }
+  if(z[1] == 8 & z[2] == 0){
+    return(4);
+  }
+  if(z[1] == 0 & z[2] == 1){
+    return(5);
+  }
+  if(z[1] == 0 & z[2] == 2){
+    return(6);
+  }
+  if(z[1] == 0 & z[2] == 4){
+    return(7);
+  }
+  if(z[1] == 0 & z[2] == 8){
+    return(8);
+  }
+}
+
+modelable_rt = between(pbyp_dataset$rt,225,550);
+  movedata = subset(pbyp_dataset, modelable_rt & !error_happened);
+  movedata$response_code = round((movedata$rt-200)/25);
+  
+  # ggplot(subset(movedata, current_time > 0 & current_time < 5750), aes(floor(current_time/250), response_code)) + stat_summary() + facet_wrap(~floor(current_distance/4))
+  
+  movedata$time_code = round(movedata$current_time/25);
+  movedata$distance_code = movedata$current_distance+1;
+  movedata$session_id = (movedata$prolific_id-19 - 1)*4 + movedata$session;
+  movedata$trial_type = as.vector(apply(cbind(movedata$pot_gain, movedata$pot_loss), 1, get_trial_type));
+  
+  # positive and negative outcomes for stan
+  # temp.df = as.data.frame(cbind(movedata$prolific_id-19, movedata$session, movedata$trial, movedata$pot_gain, -movedata$pot_loss));
+  # temp.df.liquified = unique(temp.df); 
+  # names(temp.df.liquified) = c("subID","session","trial","pot_gain","pot_loss");
+  
+  movedata$session_id_ordered = 0;
+  session_switches = c(0,which(as.logical(diff(movedata$session_id))),nrow(movedata));
+  for (k in seq(1,length(session_switches)-1)){
+    movedata$session_id_ordered[(session_switches[k]+1):session_switches[k+1]] = k;
+  }
+  
+  
+  #    
+  
+  movedata = subset(movedata, !error_happened & between(distance_code,0,16));
+
+ stan_data_vigour <- list(n_datapoints = nrow(movedata), 
+                           min_respbin = 8,
+                           n_ttypes = 8,
+                           n_subjects = sub_no,
+                           # n_sessions_per_sub = 1, not necessary for now.
+                           # n_sessions = max(movedata$session_id_ordered), # total no of sessions, now simply no of subjects (sub_no)
+                           sub_index =movedata$sub_index,  # session_id = movedata$session_id_ordered, # session number, now simply subject index (from 1: 54)
+                           n_trials_per_session = 30,
+                           n_response_bins = 14,
+                           n_time_bins = 240,
+                           n_distance_bins = 16,
+                           # subject_id = movedata$prolific_id - 19, # not needed
+                           trial = movedata$trial,
+                           responses = movedata$response_code,
+                           times = movedata$time_code,
+                           distances = movedata$distance_code,
+                           positive_outcome = c(1,2,4,8,0,0,0,0),
+                           negative_outcome = c(0,0,0,0,-1,-2,-4,-8),
+                           trial_type = movedata$trial_type
+  );
+# 
+# fit <- stan(file = '/Users/Fede/Desktop/Research/__projects/ctl-task-2.0/Scripts/ctl-task2-matlab/bellman.stan',
+#             algorithm = "Fixed_param",
+#             data = stan_data_vigour,
+#             iter = 500,
+#             chains = 4,
+#             cores = 4,
+#             pars = c("generated_responses")
+#             );
+mle <- readRDS(file = "/home/mikusn22/mnt/p/userdata/mikusn22/data/LOC_Amisul_naltrexone_2019_2020/Control Task/control-task2/Scripts/ctl-task2-R/bellman_model_session_1sub_ml.rds")
+# --- Optimise MLE
+# m = stan_model('/Users/Fede/Desktop/Research/__projects/ctl-task-2.0/Scripts/ctl-task2-matlab/bellman.stan')
+# mle = optimizing(m,data=stan_data_vigour)
+
+mle.par = mle$par;
+mle.par %>% glimpse
+movedata$gen_responses = mle.par[(length(mle.par)-dim(movedata)[1]+1):length(mle.par)];
+
+extract_mlepars <- function(mle, npars, parLen, names){
+  temp = mle$par;
+  thedf = data.frame(matrix(nrow = parLen, ncol = npars));
+  colnames(thedf) = names;
+  for (i in 1:npars) {
+    thedf[[names[i]]] = temp[(parLen*(i-1)+1):(parLen*i)];
+  }
+  return(thedf);
+}
+
+mle.extractedparams = extract_mlepars(mle, 4, stan_data_vigour$n_subjects, c("c","c0","iT","dF"));
+
+# non parametric cost estimation
+cost_pars = data.frame(matrix(nrow = stan_data_vigour$n_subjects*stan_data_vigour$n_response_bins, ncol = 3));
+names(cost_pars) = c("sub_index","response_bin","cost");
+for (k in seq(1,stan_data_vigour$n_subjects*stan_data_vigour$n_response_bins)) {
+  cost_pars[k,]$response_bin = if(k %% stan_data_vigour$n_response_bins == 0) stan_data_vigour$n_response_bins else k %% stan_data_vigour$n_response_bins;
+  cost_pars[k,]$session = ceiling(k/stan_data_vigour$n_response_bins);
+  cost_pars[k,]$cost = mle.par[k];
+}
+
+g<- ggplot(cost_pars) + stat_summary(
+  mapping = aes(x = response_bin, y = cost),
+  fun.min = function(z) { quantile(z,0.25) },
+  fun.max = function(z) { quantile(z,0.75) },
+  fun = median)
+
+
+g2 <- ggplot(subset(movedata, current_time > 0 & current_time < 5750), aes(floor(current_time/500), response_code)) + stat_summary() + stat_summary(aes(floor(current_time/250), gen_responses),colour = "red")  + facet_wrap(~floor(current_distance/4)) + ylim(1,10)
+
+# --- 
+
+# --- Sample model
+fit = readRDS(file = "/home/mikusn22/mnt/p/userdata/mikusn22/data/LOC_Amisul_naltrexone_2019_2020/Control Task/control-task2/Scripts/ctl-task2-R/bellman_model_session_1sub_ml.rds")
+fit_ss = rstan::extract(fit);
+movedata$gen_responses = 0; 
+movedata$gen_responses = colMeans(fit_ss$generated_responses)
+ggplot(subset(movedata, time_rem > 0 & current_time < 5750), aes(floor(current_time/250), gen_responses)) + stat_summary() + facet_wrap(~floor(current_distance/8)) + ylim(c(5,10))
+
+
+```
+
+Here, compare the data with generated data from model.
+
+```{r}
+
+movedata$gen_log_rt = log10(movedata$gen_responses*25+200);
+movedata$gen_log_rt_zscored = NA;
+for (ses in unique(movedata$sub_index)) {
+  sub_data = as.logical(movedata$sub_index == ses && !movedata$error_happened);
+  movedata[sub_data,]$gen_log_rt_zscored =
+    (movedata[sub_data,]$gen_log_rt - mean(movedata[sub_data,]$gen_log_rt, na.rm = T))/sd(movedata[sub_data,]$gen_log_rt, na.rm = T);
+}
+
+distance.vals = seq(1,16,2);
+time.vals = seq(250,6000,500);
+#ctl.vals = seq(0.55,0.99,0.44);
+
+summary.df = data.frame(matrix(NA,nrow=length(distance.vals)*length(time.vals),ncol=8));
+names(summary.df) = c("dist_bin", "time_bin","mean_rt","sd_rt","count","gen_mean_rt","gen_sd_rt","gen_count");
+
+c = 1;
+for (d in seq(length(distance.vals)-1)){
+  for (t in seq(length(time.vals)-1)){
+    temp = subset(movedata, 
+                    current_distance >= distance.vals[d] & current_distance <= distance.vals[d+1] &
+                    current_time >= time.vals[t] & current_time <= time.vals[t+1]); 
+    summary.df[c,]$dist_bin = d;
+    summary.df[c,]$time_bin = t;
+    summary.df[c,]$mean_rt = mean(temp$log_rt_zscored);
+    summary.df[c,]$sd_rt = sd(temp$log_rt_zscored);
+    summary.df[c,]$count = nrow(temp);
+    summary.df[c,]$gen_mean_rt = mean(temp$gen_log_rt_zscored);
+    summary.df[c,]$gen_sd_rt = sd(temp$gen_log_rt_zscored);
+    summary.df[c,]$gen_count = nrow(temp);
+    c = c+1;
+  }
+}
+
+g3<- ggplot(summary.df) + geom_point(aes(x = time_bin, y = mean_rt, alpha = log(count))) + geom_point(aes(x = time_bin, y = gen_mean_rt, alpha = log(count), color = "red")) + facet_wrap(~dist_bin) + theme_bw() + scale_x_continuous(breaks = seq(1, length(time.vals), by = 1)) + xlab("time (bins)") + ylab("Mean z-scored log_RTs") + ylim(-0.8,0.8)
+
+
+```
+
