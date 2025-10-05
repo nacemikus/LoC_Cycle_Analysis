@@ -1,4 +1,4 @@
-library(rmatio)
+# library(rmatio)
 library(tidyverse)
 # library(cowplot) # for plotting grids
 # library(lme4)
@@ -10,8 +10,6 @@ library(stringr)
 library(jsonlite)
 library(GGally)
 rm(list = ls())
-getwd()
-
 per_trial_data_baseline <- read_csv("per_trial_data_baseline.csv", show_col_types = FALSE)
 per_trial_data_weekly <- read_csv("per_trial_data_weekly.csv", show_col_types = FALSE)
 per_trial_data_final <- read_csv("per_trial_data_final.csv", show_col_types = FALSE)
@@ -52,7 +50,7 @@ per_trial_data_final$date_of_bleeding_dt <- NA
 
 per_trial_data_baseline$record_date_dt = as.Date(per_trial_data_baseline$record_date, format = f)
 per_trial_data_weekly$record_date_dt = as.Date(per_trial_data_weekly$record_date, format = f)
-per_trial_data_final$record_date_dt <- NA
+per_trial_data_final$record_date_dt =  as.Date(per_trial_data_final$record_date, format = f)
 
 per_trial_data_weekly$day_of_cycle =   as.integer(per_trial_data_weekly$record_date_dt -per_trial_data_weekly$date_of_bleeding_dt)
 per_trial_data_baseline$day_of_cycle =   as.integer(per_trial_data_baseline$record_date_dt -per_trial_data_baseline$date_of_bleeding_dt)
@@ -212,9 +210,11 @@ per_trial_data_baseline = per_trial_data_baseline %>%
     menstrual_cycle_clean = sapply(menstrual_cycle, function(x) fromJSON(x)$menstrual_cycle)
   ) 
 per_trial_data_baseline %>%
-  select(prolific_id,  assigned_sex_clean, menstrual_cycle_clean, shaps_total, phq_total:ius_inhibitory) %>%
+  # select(prolific_id,  assigned_sex_clean, menstrual_cycle_clean, shaps_total, phq_total:ius_inhibitory) %>%
   group_by(prolific_id) %>%
   summarize(
+    attention_check_phq = attention_check_phq %>% first(),
+    attention_check_ius = attention_check_ius%>% first(),
     assigned_sex_clean = first(assigned_sex_clean), 
     menstrual_cycle_clean = first(menstrual_cycle_clean),
     shaps_total   = first(shaps_total),
@@ -281,7 +281,16 @@ per_trial_data_all = per_trial_data_all %>%
         by ="prolific_id")
 per_trial_data_all$day_from_baseline = per_trial_data_all$record_date_dt - per_trial_data_all$baseline_record_date_dt
 
+
 per_trial_data_all$day_from_baseline %>% as.integer() %>% hist
+
+per_trial_data_all$day_from_baseline %>% as.numeric() %>% unique
+
+per_trial_data_all$session_number = case_when(per_trial_data_all$day_from_baseline < 7 ~ 1,
+                                              per_trial_data_all$day_from_baseline < 14 ~ 2,
+                                              per_trial_data_all$day_from_baseline < 21 ~ 3,
+                                              per_trial_data_all$day_from_baseline < 28 ~ 4,
+                                              TRUE ~ 5)
 
 per_trial_data_all$day_of_cycle %>% unique
 
@@ -359,11 +368,76 @@ for (sid in (per_trial_data_all$SESSION_ID %>% unique)) {
   }
 }
 
-saveRDS(move_data_temp, "per_move_data_baseline.rds")
+# getting RTs
+movedata = move_data_temp
+trialdata = per_trial_data_all 
+movedata = movedata %>% filter( !is.na(outcome))  %>% rename(trial_number = trial)
+
+movedata <- movedata %>% mutate(relevant_move =outcome %in% c("smooth","oops"),
+                                move_types = case_when(
+                                  relevant_move & RT<=200  ~ "fast_abnormal_move",
+                                  relevant_move & RT>200 & RT <= 650 ~ "normal_move",
+                                  relevant_move & RT>650 & RT<= 3000 ~ "long_normal_move",
+                                  relevant_move & RT>3000 ~ "long_abnormal_move",
+                                  outcome == "error" ~ "error",
+                                  outcome== "while_blue"~ "while_blue",
+                                  outcome== "while_red"~ "while_red",
+                                  TRUE ~ NA_character_ ),
+                                legit_move = ((outcome %in% c("smooth","oops")) & RT>200 & RT <= 3000) |
+                                  (outcome %in% c("error","while_blue","while_red"))
+)
+
+
+movedata$RT_relevant = movedata$RT
+movedata$RT_relevant[movedata$relevant_move == F] = NA
+movedata$RT_relevant[movedata$RT_relevant<200] = NA
+movedata$RT_relevant[movedata$RT_relevant>1000] = NA
+# merge data:
+move_data_2_trial_data = movedata %>% group_by(SESSION_ID, trial_number) %>% 
+  summarize(no_moves = n(),
+            no_non_nan_moves = sum (!is.na(outcome)),
+            long_moves = sum(RT>3000, na.rm =T),
+            mean_logRT= mean(RT_relevant %>% log, na.rm =T),
+            move_no = sum(outcome == "oops")+sum(outcome == "smooth"),
+            prop_good_moves = sum(outcome_type == "good_move")/move_no,
+            prop_shook = sum(outcome == "oops")/move_no,
+            no_lucky_good_moves = sum(outcome == "oops" & outcome_type == "good_move"),
+            sum_pressed_while_blue = sum(outcome == "while_blue"),
+            sum_pressed_while_red = sum(outcome == "while_red"),
+            sum_pressed_too_soon = sum(outcome == "error"),
+            prop_relevant_moves = sum(legit_move)/no_non_nan_moves
+  ) %>% ungroup()
+
+trialdata = trialdata %>% merge(move_data_2_trial_data, by = c("SESSION_ID", "trial_number"))
+
+
+# some more data prep:
+# trialdata$prop_shook = 
+trialdata  = trialdata %>% filter(trial_number > 0)
+trialdata <- trialdata %>% mutate(goal_achieved = outcome > 0,
+                                  prop_shook = num_randdir /(num_randdir + num_perfect),
+                                  prop_followed_command = 1-prop_shook,
+                                  blue_errors = num_whileblue/num_blue,
+                                  prop_followed_command_s = prop_followed_command %>% ave(FUN = scale),
+                                  prop_followed_command_sc = prop_followed_command %>% ave(group =trialdata$prolific_id, FUN = scale),
+                                  blue_errors_s = blue_errors %>% ave(FUN = scale))
+
+trialdata <- trialdata %>% mutate(phq_total = phq_total - 8,
+                                  gad_total = gad_total- 7)
+
+
+trialdata  = trialdata %>% group_by(prolific_id) %>% summarize(total_trials = n(), 
+                                                               prop_goal_achieved =  sum(goal_achieved == T, na.rm = T) / total_trials,
+                                                               sum_further_goal_selected =  sum(goal_selected == 2, na.rm = T),
+                                                               sum_goals_achieved=  sum(goal_achieved == T, na.rm = T),
+                                                               sum_goals_failed=  sum(goal_achieved == F, na.rm = T)) %>% merge(trialdata, by=("prolific_id"))
+
+saveRDS(movedata, "per_move_data.rds")
+saveRDS(trialdata, "per_trial_data_all.rds")
+saveRDS(per_participant_scaled, "per_participant_data.rds")
 
 
 
-saveRDS(per_trial_data_baseline, "per_trial_data_baseline_4r.rds")
 ##### rest ###################################
 ########################################
 

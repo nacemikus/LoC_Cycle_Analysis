@@ -10,37 +10,11 @@ editor_options:
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## Losing of control task (version 2.0.)
-
-The task is based on Fede's paper (Mancinelli et al. (2022), adapted by Fede and Nace).
-
-See ECNP poster for task details.
-
-The task has 30 trials played in 4 sessions separated by 1 week by ~55 participants (~45 showed up for all sessions), each trial has many "moves" or button pressess. A model was fitted to move data, the details of which are to be discussed and can be ignored for now.
-
-# Notes on group-level variables 
-Locus of control subscales are Internality, Chance and Powerful Others
-pdi = Peters delusional ideation                       
-psc = perceived stress
-cti = trauma inventry
-Attachment_Anxiety and  Attachment_Avoidance are attachment styles
-
-# Notes on trial-level variables 
-
-Each of the two goals (Goal 1 and Goal 2) have points to gain if goal reached ("gain1" & "gain2") and points to lose if goal not reached ("loss1" & "loss2"). Here, we have two types of trials, those where there is something to gain, but nothing to lose (gain > 0, loss =0), and trials where there is something to lose but nothing to gain (gain = 0 , loss >0). 
-
-When a variable is scaled across participants it get a tag "_s", when a varialbe is scaled both across and within participants it gets a tab "_sc"
-
-control = probability (experimental) that the ball does not shake (part of the experiment)
-prop_followed_command = the proportion of moves in that trial where the ball did not shake. 
-prop_good_moves = the proportion of moves in that trial where the ball followed the command (regardless of whether it shook or not).
-prop_good_move_by_chance = the proportion of moves in that trial where the ball shook but went in the wanted direction
-
 # Load data 
 trial-wise granularity, and move-wise granularity
 ```{r}
 # load packages 
-library(rmatio)
+# library(rmatio)
 # library(ggplot2)
 library(tidyverse)
 library(nlme) # for mixed models
@@ -53,96 +27,39 @@ library(ggcorrplot)
 source("theme_functions.r")
 source("auxiliary_functions.r")
 #trial-wise granularity
-trialdata <- readRDS("per_trial_data_baseline_4r.rds")
+trialdata <- readRDS("per_trial_data_all.rds")
 movedata <- readRDS(file = "per_move_data.rds")
-
-# cleaning RTs 
-movedata = movedata %>% filter( !is.na(outcome))  %>% rename(trial_number = trial)
-
-movedata <- movedata %>% mutate(relevant_move =outcome %in% c("smooth","oops"),
-                                  move_types = case_when(
-                                  relevant_move & RT<=200  ~ "fast_abnormal_move",
-                                  relevant_move & RT>200 & RT <= 650 ~ "normal_move",
-                                  relevant_move & RT>650 & RT<= 3000 ~ "long_normal_move",
-                                  relevant_move & RT>3000 ~ "long_abnormal_move",
-                                  outcome == "error" ~ "error",
-                                  outcome== "while_blue"~ "while_blue",
-                                  outcome== "while_red"~ "while_red",
-                                  TRUE ~ NA_character_ ),
-                                legit_move = ((outcome %in% c("smooth","oops")) & RT>200 & RT <= 3000) |
-                                                (outcome %in% c("error","while_blue","while_red"))
-)
- 
-
-movedata$RT_relevant = movedata$RT
-movedata$RT_relevant[movedata$relevant_move == F] = NA
-movedata$RT_relevant[movedata$RT_relevant<200] = NA
-movedata$RT_relevant[movedata$RT_relevant>3000] = NA
-
-# merge data:
-move_data_2_trial_data = movedata %>% group_by(prolific_id, trial_number) %>% 
-  summarize(no_non_nan_moves = sum (!is.na(outcome)),
-            long_moves = sum(RT>3000),
-            mean_logRT= mean(RT_relevant %>% log, na.rm =T),
-            move_no = sum(outcome == "oops")+sum(outcome == "smooth"),
-            prop_good_moves = sum(outcome_type == "good_move")/move_no,
-            prop_shook = sum(outcome == "oops")/move_no,
-            no_lucky_good_moves = sum(outcome == "oops" & outcome_type == "good_move"),
-            sum_pressed_while_blue = sum(outcome == "while_blue"),
-            sum_pressed_while_red = sum(outcome == "while_red"),
-            sum_pressed_too_soon = sum(outcome == "error"),
-            prop_relevant_moves = sum(legit_move)/no_non_nan_moves
-  ) %>% ungroup()
-
-trialdata = trialdata %>% merge(move_data_2_trial_data, by = c("prolific_id", "trial_number"))
-
-trialdata =per_trial_data_all
-
-# some more data prep:
-# trialdata$prop_shook = 
-trialdata  = trialdata %>% filter(trial_number > 0)
-trialdata <- trialdata %>% mutate(goal_achieved = outcome > 0,
-                                  prop_shook = num_randdir /(num_randdir + num_perfect),
-                                  prop_followed_command = 1-prop_shook,
-                                  blue_errors = num_whileblue/num_blue,
-                                  prop_followed_command_s = prop_followed_command %>% ave(FUN = scale),
-                                  prop_followed_command_sc = prop_followed_command %>% ave(group =trialdata$prolific_id, FUN = scale),
-                                  blue_errors_s = blue_errors %>% ave(FUN = scale))
-
-trialdata <- trialdata %>% mutate(phq_total = phq_total - 8,
-                                  gad_total = gad_total- 7)
-
-# remove attention check ppl
+participantdata = readRDS(file = "per_participant_data.rds")
 
 
-
-movedata_ins = movedata %>% merge(trialdata %>% select(prolific_id, trial_number, shaps_total:ius_total), by = c("prolific_id", "trial_number"))
-                                 
-      
-movedata_ins = movedata_ins %>% group_by(prolific_id, move_types) %>%  
-  summarize(no_of_types = n(),
-            mean_RT= mean(RT, na.rm =T),
-            move_no = sum(outcome == "oops")+sum(outcome == "smooth"),
-            prop_good_moves = sum(outcome_type == "good_move")/move_no,
-            prop_shook = sum(outcome == "oops")/move_no,
-            no_lucky_good_moves = sum(outcome == "oops" & outcome_type == "good_move"),
-            sum_pressed_while_blue = sum(outcome == "while_blue"),
-            sum_pressed_while_red = sum(outcome == "while_red"),
-            sum_pressed_too_soon = sum(outcome == "error"),
-           phq_total = phq_total%>% first,
-            gad_total = gad_total[1],
-            pss_total = pss_total[1],
-            ius_total = ius_total[1],
-            shaps_total = shaps_total[1],
-  )  %>% ungroup()  %>% 
-  mutate(shaps_total_s = shaps_total %>% ave(FUN = scale),
-               shaps_total_f = shaps_total_s>0 )
-  
-movedata_ins %>%  ggplot(aes(x=shaps_total_f, y = mean_RT)) + geom_point(alpha = 0.1, width = 0.1) +
-  geom_smooth(method= "lm") + facet_wrap(~move_types)
-
-movedata_ins %>%  ggplot(aes(x=shaps_total_f, y = mean_RT)) + geom_jitter(alpha = 0.1, width = 0.1) +
-  geom_boxplot(alpha = 0.5) + facet_wrap(~move_types)
+# 
+# movedata_ins = movedata %>% merge(trialdata %>% select(prolific_id, trial_number, shaps_total:ius_total), by = c("prolific_id", "trial_number"))
+#                                  
+#       
+# movedata_ins = movedata_ins %>% group_by(prolific_id, move_types) %>%  
+#   summarize(no_of_types = n(),
+#             mean_RT= mean(RT, na.rm =T),
+#             move_no = sum(outcome == "oops")+sum(outcome == "smooth"),
+#             prop_good_moves = sum(outcome_type == "good_move")/move_no,
+#             prop_shook = sum(outcome == "oops")/move_no,
+#             no_lucky_good_moves = sum(outcome == "oops" & outcome_type == "good_move"),
+#             sum_pressed_while_blue = sum(outcome == "while_blue"),
+#             sum_pressed_while_red = sum(outcome == "while_red"),
+#             sum_pressed_too_soon = sum(outcome == "error"),
+#            phq_total = phq_total%>% first,
+#             gad_total = gad_total[1],
+#             pss_total = pss_total[1],
+#             ius_total = ius_total[1],
+#             shaps_total = shaps_total[1],
+#   )  %>% ungroup()  %>% 
+#   mutate(shaps_total_s = shaps_total %>% ave(FUN = scale),
+#                shaps_total_f = shaps_total_s>0 )
+#   
+# movedata_ins %>%  ggplot(aes(x=shaps_total_f, y = mean_RT)) + geom_point(alpha = 0.1, width = 0.1) +
+#   geom_smooth(method= "lm") + facet_wrap(~move_types)
+# 
+# movedata_ins %>%  ggplot(aes(x=shaps_total_f, y = mean_RT)) + geom_jitter(alpha = 0.1, width = 0.1) +
+#   geom_boxplot(alpha = 0.5) + facet_wrap(~move_types)
 
 
                           
@@ -157,30 +74,223 @@ movedata_ins %>%  ggplot(aes(x=shaps_total_f, y = mean_RT)) + geom_jitter(alpha 
 
 ```{r}
 
-# quality checks
+# no of sessions
 trialdata$SESSION_ID  %>% unique %>% length
 
-lmer(trialdata, StressQ ~ prop_followed_command_s* + (prop_followed_command_s|SESSION_ID))
-
-trialdata  = trialdata %>% group_by(prolific_id) %>% summarize(total_trials = n(), 
-                                                  prop_goal_achieved =  sum(goal_achieved == T, na.rm = T) / total_trials,
-                                                  sum_further_goal_selected =  sum(goal_selected == 2, na.rm = T),
-                                                  sum_goals_achieved=  sum(goal_achieved == T, na.rm = T),
-                                                  sum_goals_failed=  sum(goal_achieved == F, na.rm = T)) %>% merge(trialdata, by=("prolific_id"))
-trialdata =  trialdata %>% filter(attention_check_ius == TRUE, attention_check_phq == TRUE, move_no >3, move_no < 50, long_moves ==0)
+trialdata =  trialdata %>% filter(attention_check_ius == TRUE, attention_check_phq == TRUE, move_no >3, move_no < 50)
 
 
-trialdata  = trialdata %>% group_by(prolific_id) %>% summarize(total_trials_after_ex = n()) %>% merge(trialdata, by=("prolific_id"))
+# participants in all sessions:
 
-trialdata2 =  trialdata %>% filter(prop_followed_command!=1)
+IDs_all_sessions = sessiondata %>% group_by(prolific_id) %>% summarize(n= n()) %>% filter( n ==5) %>% pull(prolific_id) 
 
-# trialdata =  trialdata %>% filter(attention_check_ius == TRUE, attention_check_phq == TRUE, move_no >3, move_no < 50, prolific_id %in% incl_ID)
-
-# no of participants
-trialdata$prolific_id %>% unique() %>% length
+IDs_baseline_final_sessions = sessiondata %>% filter(session_number %in% c(1,5) ) %>%  group_by(prolific_id) %>% summarize(n= n()) %>% filter( n ==2) %>% pull(prolific_id) %>% unique
 
 
- trialdata_blue$prolific_id %>% unique() %>% length
+# collect variables #############
+
+
+sessiondata = trialdata %>% group_by(SESSION_ID) %>% summarize(trial_count=n(),
+                                                               prolific_id = prolific_id %>% first(),
+                                                               session_number= session_number%>% first()) 
+
+
+# StressQ, ControlQ #### 
+
+model1 <- lmer(data = trialdata, StressQ_s ~ ControlQ_s + (ControlQ_s|SESSION_ID))
+
+slopes_df <- coef(model1)$SESSION_ID %>% 
+  tibble::rownames_to_column("SESSION_ID") %>% 
+  select(SESSION_ID, ControlQ_s) %>% 
+  rename(Measure_StressQ_ControlQ = ControlQ_s)
+
+sessiondata <- left_join(sessiondata, slopes_df, by = "SESSION_ID")
+
+# StressQ, prop followed command #### 
+model1 <- lmer(data = trialdata, StressQ_s ~ prop_followed_command_s + (prop_followed_command_s|SESSION_ID))
+
+slopes_df <- coef(model1)$SESSION_ID %>% 
+  tibble::rownames_to_column("SESSION_ID") %>% 
+  select(SESSION_ID, prop_followed_command_s) %>% 
+  rename(Measure_StressQ_Prop_follow = prop_followed_command_s)
+
+sessiondata <- left_join(sessiondata, slopes_df, by = "SESSION_ID")
+
+# AttribQ, outcome #### 
+model1 <- lmer(data = trialdata, AttribQ_s ~ goal_achieved + (goal_achieved|SESSION_ID))
+
+slopes_df <- coef(model1)$SESSION_ID %>% 
+  tibble::rownames_to_column("SESSION_ID") %>% 
+  select(SESSION_ID, goal_achievedTRUE) %>% 
+  rename(Measure_Attrib_GA = goal_achievedTRUE)
+
+sessiondata <- left_join(sessiondata, slopes_df, by = "SESSION_ID")
+
+# MotivationQ_s, goal_achieved #### 
+
+model1 <- lmer(data = trialdata, MotivationQ_s ~ goal_achieved + (goal_achieved|SESSION_ID))
+
+slopes_df <- coef(model1)$SESSION_ID %>% 
+  tibble::rownames_to_column("SESSION_ID") %>% 
+  select(SESSION_ID, goal_achievedTRUE) %>% 
+  rename(Measure_MotivationQ_GA = goal_achievedTRUE)
+
+sessiondata <- left_join(sessiondata, slopes_df, by = "SESSION_ID")
+
+# errors in go no go #### 
+
+model1 <- lmer(data = trialdata, blue_errors_s ~ 1 + (1|SESSION_ID))
+
+slopes_df <- coef(model1)$SESSION_ID %>% 
+  tibble::rownames_to_column("SESSION_ID") %>% 
+  select(SESSION_ID, `(Intercept)` ) %>% 
+  rename(Measure_Errors_GNG = `(Intercept)` )
+
+sessiondata <- left_join(sessiondata, slopes_df, by = "SESSION_ID")
+
+# rts #### 
+
+model1 <- lmer(data = trialdata, mean_logRT ~ 1 + (1|SESSION_ID))
+
+slopes_df <- coef(model1)$SESSION_ID %>% 
+  tibble::rownames_to_column("SESSION_ID") %>% 
+  select(SESSION_ID, `(Intercept)` ) %>% 
+  rename(Measure_RT_GNG = `(Intercept)` )
+
+sessiondata <- left_join(sessiondata, slopes_df, by = "SESSION_ID")
+
+# rts control ??#### 
+
+model1 <- lmer(data = movedata %>% filter(outcome %in% c("smooth" ,    "oops" )), RT %>% lead ~ outcome + (outcome|SESSION_ID))
+summary(model1) 
+
+slopes_df <- coef(model1)$SESSION_ID %>% 
+  tibble::rownames_to_column("SESSION_ID") %>% 
+  select(SESSION_ID, outcomesmooth  ) %>% 
+  rename(Measure_RT_follow = outcomesmooth )
+
+sessiondata <- left_join(sessiondata, slopes_df, by = "SESSION_ID")
+
+
+# rts attrib #### 
+trialdata$mean_logRT_s =  trialdata$mean_logRT %>% ave(FUN = scale)
+model1 <- lmer(data = trialdata, AttribQ ~ mean_logRT_s + (mean_logRT_s|SESSION_ID))
+
+slopes_df <- coef(model1)$SESSION_ID %>% 
+  tibble::rownames_to_column("SESSION_ID") %>% 
+  select(SESSION_ID, mean_logRT_s) %>% 
+  rename(Measure_AttribQ_RT = mean_logRT_s)
+
+sessiondata <- left_join(sessiondata, slopes_df, by = "SESSION_ID")
+
+# rts attrib #### 
+trialdata$mean_logRT_s =  trialdata$mean_logRT %>% ave(FUN = scale)
+model1 <- lmer(data = trialdata, AttribQ ~ mean_logRT_s + (mean_logRT_s|SESSION_ID))
+
+slopes_df <- coef(model1)$SESSION_ID %>% 
+  tibble::rownames_to_column("SESSION_ID") %>% 
+  select(SESSION_ID, mean_logRT_s) %>% 
+  rename(Measure_AttribQ_RT = mean_logRT_s)
+
+sessiondata <- left_join(sessiondata, slopes_df, by = "SESSION_ID")
+
+
+# rts control #### 
+trialdata$mean_logRT_s =  trialdata$mean_logRT %>% ave(FUN = scale)
+model1 <- lmer(data = trialdata, ControlQ ~ mean_logRT_s + (mean_logRT_s|SESSION_ID))
+
+slopes_df <- coef(model1)$SESSION_ID %>% 
+  tibble::rownames_to_column("SESSION_ID") %>% 
+  select(SESSION_ID, mean_logRT_s) %>% 
+  rename(Measure_ControlQ_RT = mean_logRT_s)
+
+sessiondata <- left_join(sessiondata, slopes_df, by = "SESSION_ID")
+
+
+# rts attrib #### 
+
+model1 <- lmer(data = trialdata, blue_errors ~ prop_followed_command_s + (prop_followed_command_s|SESSION_ID))
+summary(model1)
+slopes_df <- coef(model1)$SESSION_ID %>% 
+  tibble::rownames_to_column("SESSION_ID") %>% 
+  select(SESSION_ID, prop_followed_command_s) %>% 
+  rename(Measure_Errors_GNG_PropFollow = prop_followed_command_s)
+
+sessiondata <- left_join(sessiondata, slopes_df, by = "SESSION_ID")
+
+icc_data = get_ICC_data_all("Measure_Errors_GNG_PropFollow")
+psych::ICC(icc_data %>% select(session_1 :  session_5))
+cor(icc_data %>% select(session_1 :  session_5))
+
+
+```
+
+```{trt} 
+
+
+
+# TRT session 1 and 5
+get_ICC_data_base_final = function(yvar = "Measure_StressQ_ControlQ") {
+
+y_data <- sessiondata %>%
+  filter(prolific_id %in% IDs_baseline_final_sessions,
+         session_number %in% c(1, 5)) %>%
+  select(prolific_id, session_number, !!sym(yvar)) %>%
+  distinct() %>%  # remove any accidental duplicates
+  pivot_wider(
+    names_from = session_number,
+    values_from = !!sym(yvar),
+    names_prefix = "session_"
+  ) %>%
+  drop_na(session_1, session_5)
+
+return(y_data)
+}
+
+get_ICC_data_all = function(yvar = "Measure_StressQ_ControlQ") {
+
+y_data <- icc_data <- sessiondata %>%
+  filter(prolific_id %in% IDs_all_sessions) %>%
+  select(prolific_id, session_number, !!sym(yvar)) %>%
+  distinct() %>%  # remove any accidental duplicates
+  pivot_wider(
+    names_from = session_number,
+    values_from = !!sym(yvar),
+    names_prefix = "session_"
+  ) %>%
+  drop_na(session_1, session_2, session_3, session_4, session_5)
+
+return(y_data)
+}
+
+
+icc_data = get_ICC_data_all("Measure_StressQ_ControlQ")
+psych::ICC(icc_data %>% select(session_1 :  session_5))
+cor(icc_data %>% select(session_1 :  session_5))
+
+
+icc_data = get_ICC_data_all("Measure_Attrib_GA")
+psych::ICC(icc_data %>% select(session_1 :  session_5))
+cor(icc_data %>% select(session_1 :  session_5))
+
+icc_data = get_ICC_data_all("Measure_StressQ_Prop_follow")
+psych::ICC(icc_data %>% select(session_1 :  session_5))
+cor(icc_data %>% select(session_1 :  session_5))
+
+icc_data = get_ICC_data_all("Measure_Errors_GNG")
+psych::ICC(icc_data %>% select(session_1 :  session_5))
+cor(icc_data %>% select(session_1 :  session_5))
+
+icc_data = get_ICC_data_all("Measure_RT_GNG")
+psych::ICC(icc_data %>% select(session_1 :  session_5))
+cor(icc_data %>% select(session_1 :  session_5))
+
+icc_data = get_ICC_data_all("Measure_AttribQ_RT")
+psych::ICC(icc_data %>% select(session_1 :  session_5))
+cor(icc_data %>% select(session_1 :  session_5))
+
+
+
 
 ```
 
@@ -758,7 +868,7 @@ sess_no = 4
 betas_control <- matrix(NA, ncol =sess_no, nrow = 39)
 
 for (s in c(1:sess_no)) { 
-model1 <- lme(data = subset(trialdata_reduced, session == s), StressQ ~ ControlQ, random = ~ControlQ|prolific_id, na.action = na.exclude, method = "ML")
+model1 <- lmer(data = subset(trialdata_reduced, session == s), StressQ ~ ControlQ + (ControlQ|prolific_id))
 betas_control[,s] = coef(model1)[,2]
 }
 ICC(betas_control)
